@@ -100,6 +100,20 @@ def post_to_ig(ig_account_id, page_token, media_url, caption, media_type="IMAGE"
 
     return post_id, None
 
+def upload_to_imgbb(image_path):
+    """Upload image to imgbb and return public URL."""
+    imgbb_key = os.environ.get("IMGBB_API_KEY")
+    if not imgbb_key:
+        return None
+    with open(image_path, "rb") as f:
+        import base64
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    r = requests.post("https://api.imgbb.com/1/upload",
+                      data={"key": imgbb_key, "image": b64},
+                      timeout=30)
+    result = r.json()
+    return result.get("data", {}).get("url")
+
 def _post_to_all_pages(media_url, caption, media_type="IMAGE"):
     """Background thread — posts to all active fan pages with staggered delays."""
     try:
@@ -147,8 +161,12 @@ def _quote_scheduler_loop():
 
             if job:
                 filename = make_quote_card(job["quote"])
-                base_url = os.environ.get("BASE_URL", "https://fan-page-manager.onrender.com")
-                media_url = f"{base_url}/quote-image/{filename}"
+                image_path = os.path.join(QUOTE_IMG_DIR, filename)
+                media_url = upload_to_imgbb(image_path)
+                if not media_url:
+                    base_url = os.environ.get("BASE_URL", "https://fan-page-manager.onrender.com")
+                    media_url = f"{base_url}/quote-image/{filename}"
+                    time.sleep(5)
                 _post_to_all_pages(media_url, job["caption"], "IMAGE")
 
                 conn2 = get_conn()
