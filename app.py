@@ -634,6 +634,21 @@ def delete_post():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/cancel-pending-quotes", methods=["POST", "GET"])
+def cancel_pending_quotes():
+    """Cancel all pending quotes in the queue."""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE quote_queue SET status='cancelled' WHERE status='pending'")
+        count = cur.rowcount
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"cancelled": count})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/migrate", methods=["GET"])
 def migrate():
     init_db()
