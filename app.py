@@ -15,7 +15,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 USER_ACCESS_TOKEN = os.environ.get("FB_USER_TOKEN")
 GRAPH = "https://graph.facebook.com/v19.0"
 
-# â”€â”€ DB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── DB ────────────────────────────────────────────────────────────────────────
 
 def get_conn():
     return psycopg2.connect(DATABASE_URL, connect_timeout=10,
@@ -67,7 +67,7 @@ def init_db():
     cur.close()
     conn.close()
 
-# â”€â”€ INSTAGRAM HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── INSTAGRAM HELPERS ─────────────────────────────────────────────────────────
 
 def get_ig_for_page(page_access_token, fb_page_id):
     r = requests.get(f"{GRAPH}/{fb_page_id}",
@@ -130,7 +130,7 @@ def upload_to_imgbb(image_path):
     return result.get("data", {}).get("url")
 
 def _post_to_all_pages(media_url, caption, media_type="IMAGE"):
-    """Background thread â€” posts to all active fan pages with staggered delays."""
+    """Background thread — posts to all active fan pages with staggered delays."""
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -154,7 +154,7 @@ def _post_to_all_pages(media_url, caption, media_type="IMAGE"):
             if err:
                 print(f"[post] {page['page_name']} error: {err}")
             else:
-                print(f"[post] {page['page_name']} â†’ {post_id}")
+                print(f"[post] {page['page_name']} → {post_id}")
             time.sleep(3)
     except Exception as e:
         print(f"[post-all] {e}")
@@ -238,7 +238,7 @@ def _analytics_loop():
             print(f"[analytics-loop] {e}")
         time.sleep(3600)
 
-# â”€â”€ ROUTES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── ROUTES ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -246,7 +246,7 @@ def index():
 
 @app.route("/list-pages", methods=["GET"])
 def list_available_pages():
-    """Show all FB pages on your account without adding them to DB â€” use to pick which ones to sync."""
+    """Show all FB pages on your account without adding them to DB — use to pick which ones to sync."""
     try:
         r = requests.get(f"{GRAPH}/me/accounts",
                          params={"fields": "id,name,instagram_business_account",
@@ -416,7 +416,7 @@ def post_quote():
                      args=(media_url, caption, "IMAGE"), daemon=True).start()
     return jsonify({"status": "posting", "media_url": media_url, "caption": caption})
 
-# â”€â”€ CLIPS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── CLIPS ─────────────────────────────────────────────────────────────────────
 
 CLIP_DIR = "/tmp/clips"
 os.makedirs(CLIP_DIR, exist_ok=True)
@@ -437,6 +437,9 @@ def download_clip(url):
     return path, info
 
 BAR_H = 110
+# Output size kept modest: the Render instance is small and 1080x1920 encodes ran it out of memory
+OUT_W = int(os.environ.get("CLIP_OUT_W", "720"))
+OUT_H = OUT_W * 16 // 9 // 2 * 2
 
 def _bold_font(size):
     for fp in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -507,9 +510,9 @@ def render_clip(src_path, slug, platform):
               f"[blk0][1:v]overlay=0:H-{BAR_H}[blk];"
               "[bg][blk]overlay=(W-w)/2:(H-h)/2[v]")
     cmd = [_ffmpeg_exe(), "-y", "-i", src_path, "-i", bar, "-filter_complex", fc,
-           "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast",
-           "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
-           "-movflags", "+faststart", "-t", "90", dst]
+           "-map", "[v]", "-map", "0:a?", "-s", f"{OUT_W}x{OUT_H}", "-threads", "1",
+           "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-t", "90", dst]
     import subprocess
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     os.remove(bar)
@@ -529,7 +532,7 @@ def channel_slug_from(url, info, override):
 
 def generate_clip_caption(title, channel_name, platform, handle_tag, hint=""):
     """AI-written caption; falls back to a plain template."""
-    fallback = f"{title}\n\n{channel_name} on {platform.capitalize()} ðŸ”¥\n\n{handle_tag}"
+    fallback = f"{title}\n\n{channel_name} on {platform.capitalize()} 🔥\n\n{handle_tag}"
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         return fallback
@@ -551,18 +554,22 @@ def generate_clip_caption(title, channel_name, platform, handle_tag, hint=""):
 
 def _process_and_post_clip(url, channel_override, hint, caption_override):
     try:
+        print(f"[clip] downloading {url}")
         src, info = download_clip(url)
+        print(f"[clip] downloaded {os.path.getsize(src)//1024} KB")
         platform = "kick" if "kick.com" in url else "twitch"
         slug = channel_slug_from(url, info, channel_override)
         channel = channel_override or slug
         title = info.get("title") or "Clip"
         handle_tag = f"{channel} on {platform.capitalize()}"
+        print(f"[clip] rendering as {slug}/{platform}")
         filename = render_clip(src, slug, platform)
+        print(f"[clip] rendered {filename} ({os.path.getsize(os.path.join(CLIP_DIR, filename))//1024} KB)")
         os.remove(src)
         caption = caption_override or generate_clip_caption(title, channel, platform, handle_tag, hint)
         base_url = os.environ.get("BASE_URL", "https://fan-page-manager.onrender.com")
         media_url = f"{base_url}/clip-video/{filename}"
-        print(f"[clip] {channel} â†’ {media_url}")
+        print(f"[clip] {channel} → {media_url}")
         _post_to_all_pages(media_url, caption, "VIDEO")
     except Exception as e:
         print(f"[clip] failed: {e}")
@@ -842,7 +849,7 @@ def migrate():
     init_db()
     return jsonify({"status": "ok"})
 
-# â”€â”€ STARTUP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── STARTUP ───────────────────────────────────────────────────────────────────
 
 init_db()
 threading.Thread(target=_analytics_loop, daemon=True).start()
