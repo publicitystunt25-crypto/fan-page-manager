@@ -342,6 +342,34 @@ def analytics():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/followers", methods=["GET"])
+def followers():
+    """Get follower count for all active fan pages."""
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, ig_account_id, page_name, page_access_token FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL")
+        pages = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        results = []
+        for page in pages:
+            r = requests.get(f"{GRAPH}/{page['ig_account_id']}",
+                             params={"fields": "followers_count,username,media_count",
+                                     "access_token": page["page_access_token"]},
+                             timeout=10)
+            data = r.json()
+            results.append({
+                "page_name": page["page_name"],
+                "username": data.get("username"),
+                "followers": data.get("followers_count"),
+                "posts": data.get("media_count")
+            })
+        return jsonify({"pages": results})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/analytics/today", methods=["GET"])
 def analytics_today():
     try:
