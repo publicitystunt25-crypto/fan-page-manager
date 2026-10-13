@@ -1390,11 +1390,11 @@ def connect_start():
         "state": _sign_state(group), "scope": FB_SCOPES, "response_type": "code"})
     return jsonify({"url": url})
 
-def _connect_with_token(short_token, group, hint_no_pages):
-    """Exchange any user token for a long-lived one, save it, then add/refresh every page it can see.
-    Returns (ok, title, lines)."""
+def _connect_with_token(short_token, group, hint_no_pages, exchange=True):
+    """Exchange a user token for a long-lived one (skipped for system user tokens, which never expire),
+    save it, then add/refresh every page it can see. Returns (ok, title, lines)."""
     base = {"client_id": FB_APP_ID, "client_secret": FB_APP_SECRET}
-    long_ = requests.get(f"{GRAPH}/oauth/access_token",
+    long_ = {"access_token": short_token} if not exchange else requests.get(f"{GRAPH}/oauth/access_token",
                          params={**base, "grant_type": "fb_exchange_token",
                                  "fb_exchange_token": short_token}, timeout=20).json()
     user_token = long_.get("access_token")
@@ -1478,23 +1478,43 @@ button:disabled{opacity:.6}ul{padding-left:18px;font-size:14px}.ok{color:#16a34a
 <label for="g">These pages will post:</label>
 <select id="g"><option value="clipper">Clips (clipper pages)</option><option value="promo">Mia promo content</option></select>
 <label for="t">Access token</label><textarea id="t" autocomplete="off" spellcheck="false"></textarea>
-<button id="b">Connect pages</button><div id="o" role="status"></div></div>
+<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="sys"> System user token (never expires)</label>
+<button id="b">Connect pages</button><button id="sync" style="background:transparent;color:var(--accent);border:1px solid var(--accent)">Sync new pages with saved token</button><div id="o" role="status"></div></div>
 <script>
-const b=document.getElementById('b'),o=document.getElementById('o');
-b.onclick=async()=>{let key=localStorage.getItem('adminKey')||'';if(!key){key=prompt('Enter admin key:')||'';localStorage.setItem('adminKey',key)}
-o.replaceChildren();b.disabled=true;
-try{const r=await fetch('/connect/token',{method:'POST',headers:{'X-Admin-Key':key,'Content-Type':'application/json'},
-body:JSON.stringify({token:document.getElementById('t').value.trim(),group:document.getElementById('g').value})});
+const b=document.getElementById('b'),o=document.getElementById('o'),sy=document.getElementById('sync');
+async function go(url,payload){let key=localStorage.getItem('adminKey')||'';if(!key){key=prompt('Enter admin key:')||'';localStorage.setItem('adminKey',key)}
+o.replaceChildren();b.disabled=sy.disabled=true;
+try{const r=await fetch(url,{method:'POST',headers:{'X-Admin-Key':key,'Content-Type':'application/json'},
+body:JSON.stringify(payload)});
 const j=await r.json();if(r.status===401)localStorage.removeItem('adminKey');
 const h=document.createElement('p');h.className=j.ok?'ok':'err';h.textContent=j.title||j.error||'Something went wrong.';o.append(h);
 if(j.lines){const u=document.createElement('ul');for(const l of j.lines){const li=document.createElement('li');li.textContent=l;u.append(li)}o.append(u)}
 if(j.ok)document.getElementById('t').value='';
-}catch(e){const h=document.createElement('p');h.className='err';h.textContent='Network error.';o.append(h)}b.disabled=false};
+}catch(e){const h=document.createElement('p');h.className='err';h.textContent='Network error.';o.append(h)}b.disabled=sy.disabled=false}
+b.onclick=()=>go('/connect/token',{token:document.getElementById('t').value.trim(),group:document.getElementById('g').value,system:document.getElementById('sys').checked});
+sy.onclick=()=>go('/connect/sync',{group:document.getElementById('g').value});
 </script></body></html>"""
 
 @app.route("/connect/token", methods=["GET"])
 def connect_token_page():
     return Response(CONNECT_TOKEN_HTML, mimetype="text/html")
+
+@app.route("/connect/sync", methods=["POST"])
+def connect_sync():
+    """Re-read the pages the saved token can see and add any new ones (existing pages keep their group)."""
+    denied = _admin_guard()
+    if denied:
+        return denied
+    group = (request.get_json(silent=True) or {}).get("group", "clipper")
+    token = get_user_token()
+    if not token or group not in PAGE_GROUPS:
+        return jsonify({"ok": False, "title": "No saved token", "lines": ["Paste a token on this page first."]}), 400
+    try:
+        ok, title, lines = _connect_with_token(token, group, "No pages visible to the saved token.", exchange=False)
+        return jsonify({"ok": ok, "title": title, "lines": lines}), (200 if ok else 400)
+    except Exception as e:
+        print(f"[connect-sync] {type(e).__name__}")
+        return jsonify({"ok": False, "title": "Something went wrong", "lines": ["Check the server logs and try again."]}), 500
 
 @app.route("/connect/token", methods=["POST"])
 def connect_token_submit():
@@ -1508,8 +1528,12 @@ def connect_token_submit():
     if len(token) < 20 or group not in PAGE_GROUPS:
         return jsonify({"error": "paste a valid access token and choose a group"}), 400
     try:
+        system = bool(data.get("system"))
         ok, title, lines = _connect_with_token(
-            token, group, "No pages came back. In Graph API Explorer, regenerate the token and tick the pages in the dialog.")
+            token, group,
+            "No pages came back. Check the pages are assigned to the system user in Business Settings." if system
+            else "No pages came back. In Graph API Explorer, regenerate the token and tick the pages in the dialog.",
+            exchange=not system)
         return jsonify({"ok": ok, "title": title, "lines": lines}), (200 if ok else 400)
     except Exception as e:
         print(f"[connect-token] {type(e).__name__}")
