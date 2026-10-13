@@ -360,12 +360,24 @@ def followers():
                                      "access_token": page["page_access_token"]},
                              timeout=10)
             data = r.json()
-            results.append({
-                "page_name": page["page_name"],
-                "username": data.get("username"),
-                "followers": data.get("followers_count"),
-                "posts": data.get("media_count")
-            })
+            err = data.get("error", {})
+            err_code = err.get("code")
+
+            if err_code:
+                status = "flagged/restricted" if err_code in (200, 368) else "token_expired" if err_code == 190 else f"error_{err_code}"
+                results.append({
+                    "page_name": page["page_name"],
+                    "status": status,
+                    "error": err.get("message")
+                })
+            else:
+                results.append({
+                    "page_name": page["page_name"],
+                    "status": "ok",
+                    "username": data.get("username"),
+                    "followers": data.get("followers_count"),
+                    "posts": data.get("media_count")
+                })
         return jsonify({"pages": results})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
