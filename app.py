@@ -1329,7 +1329,7 @@ def _token_never_expires(token):
         if "expires_at" in d:
             return d["expires_at"] == 0
     except Exception as e:
-        print(f"[debug_token] {e}")
+        print(f"[debug_token] {type(e).__name__}")
     return None
 
 CONNECT_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -1390,6 +1390,52 @@ def connect_start():
         "state": _sign_state(group), "scope": FB_SCOPES, "response_type": "code"})
     return jsonify({"url": url})
 
+def _connect_with_token(short_token, group, hint_no_pages):
+    """Exchange any user token for a long-lived one, save it, then add/refresh every page it can see.
+    Returns (ok, title, lines)."""
+    base = {"client_id": FB_APP_ID, "client_secret": FB_APP_SECRET}
+    long_ = requests.get(f"{GRAPH}/oauth/access_token",
+                         params={**base, "grant_type": "fb_exchange_token",
+                                 "fb_exchange_token": short_token}, timeout=20).json()
+    user_token = long_.get("access_token")
+    if not user_token:
+        return False, "Token exchange failed", [long_.get("error", {}).get("message", "no token returned")]
+    _save_user_token(user_token)
+
+    r = requests.get(f"{GRAPH}/me/accounts",
+                     params={"fields": "id,name,access_token,instagram_business_account{id,username}",
+                             "access_token": user_token, "limit": 100}, timeout=30).json()
+    pages = r.get("data", [])
+    if not pages:
+        return False, "No pages returned", [hint_no_pages, r.get("error", {}).get("message", "")]
+
+    lines, added = [], 0
+    for p in pages:
+        name, token = p.get("name", p["id"]), p.get("access_token")
+        ig = (p.get("instagram_business_account") or {})
+        if not ig.get("id"):
+            lines.append(f"{name}: skipped - no Instagram account linked to this Facebook Page")
+            continue
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO fan_pages (fb_page_id, ig_account_id, page_name, page_access_token, page_group)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (fb_page_id) DO UPDATE
+              SET ig_account_id=EXCLUDED.ig_account_id, page_name=EXCLUDED.page_name,
+                  page_access_token=EXCLUDED.page_access_token
+            RETURNING (xmax = 0) AS inserted""", (p["id"], ig["id"], name, token, group))
+        inserted = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        forever = _token_never_expires(token)
+        tok = "token never expires" if forever else ("token expires - check app settings" if forever is False else "token saved")
+        who = f"@{ig['username']}" if ig.get("username") else "Instagram linked"
+        lines.append(f"{name} ({who}): {'added to ' + group if inserted else 'updated'} - {tok}")
+        added += 1
+    return added > 0, f"Connected {added} page(s)", lines
+
 @app.route("/connect/callback", methods=["GET"])
 def connect_callback():
     if not (ADMIN_KEY and FB_APP_ID and FB_APP_SECRET):
@@ -1400,58 +1446,74 @@ def connect_callback():
     if request.args.get("error") or not request.args.get("code"):
         return _result_page("Not connected", [request.args.get("error_description", "Facebook login was cancelled.")], ok=False), 400
     try:
-        base = {"client_id": FB_APP_ID, "client_secret": FB_APP_SECRET}
         short = requests.get(f"{GRAPH}/oauth/access_token",
-                             params={**base, "redirect_uri": _connect_redirect_uri(),
+                             params={"client_id": FB_APP_ID, "client_secret": FB_APP_SECRET,
+                                     "redirect_uri": _connect_redirect_uri(),
                                      "code": request.args["code"]}, timeout=20).json()
         if "access_token" not in short:
             return _result_page("Facebook login failed", [short.get("error", {}).get("message", "no token returned")], ok=False), 400
-        long_ = requests.get(f"{GRAPH}/oauth/access_token",
-                             params={**base, "grant_type": "fb_exchange_token",
-                                     "fb_exchange_token": short["access_token"]}, timeout=20).json()
-        user_token = long_.get("access_token")
-        if not user_token:
-            return _result_page("Token exchange failed", [long_.get("error", {}).get("message", "no token returned")], ok=False), 400
-        _save_user_token(user_token)
-
-        r = requests.get(f"{GRAPH}/me/accounts",
-                         params={"fields": "id,name,access_token,instagram_business_account{id,username}",
-                                 "access_token": user_token, "limit": 100}, timeout=30).json()
-        pages = r.get("data", [])
-        if not pages:
-            return _result_page("No pages returned", [
-                "Facebook returned no pages. In the login dialog, choose 'Edit settings' and tick the pages to allow.",
-                r.get("error", {}).get("message", "")], ok=False), 400
-
-        lines, added = [], 0
-        for p in pages:
-            name, token = p.get("name", p["id"]), p.get("access_token")
-            ig = (p.get("instagram_business_account") or {})
-            if not ig.get("id"):
-                lines.append(f"{name}: skipped - no Instagram account linked to this Facebook Page")
-                continue
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO fan_pages (fb_page_id, ig_account_id, page_name, page_access_token, page_group)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (fb_page_id) DO UPDATE
-                  SET ig_account_id=EXCLUDED.ig_account_id, page_name=EXCLUDED.page_name,
-                      page_access_token=EXCLUDED.page_access_token
-                RETURNING (xmax = 0) AS inserted""", (p["id"], ig["id"], name, token, group))
-            inserted = cur.fetchone()[0]
-            conn.commit()
-            cur.close()
-            conn.close()
-            forever = _token_never_expires(token)
-            tok = "token never expires" if forever else ("token expires - check app settings" if forever is False else "token saved")
-            who = f"@{ig['username']}" if ig.get("username") else "Instagram linked"
-            lines.append(f"{name} ({who}): {'added to ' + group if inserted else 'updated'} - {tok}")
-            added += 1
-        return _result_page(f"Connected {added} page(s)", lines, ok=added > 0)
+        ok, title, lines = _connect_with_token(
+            short["access_token"], group,
+            "Facebook returned no pages. In the login dialog, choose 'Edit settings' and tick the pages to allow.")
+        return _result_page(title, lines, ok=ok), (200 if ok else 400)
     except Exception as e:
-        print(f"[connect] {e}")
+        print(f"[connect] {type(e).__name__}")   # not str(e): request errors can contain the URL with tokens
         return _result_page("Something went wrong", ["Check the server logs and try again."], ok=False), 500
+
+CONNECT_TOKEN_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect with a Token</title>
+<style>
+:root{--bg:#f6f5fb;--card:#fff;--fg:#1c1b22;--muted:#6b6a78;--accent:#1877f2;--line:#dcdae8}
+@media(prefers-color-scheme:dark){:root{--bg:#0f0e14;--card:#1a1923;--fg:#f1f0f7;--muted:#9a98aa;--line:#2e2c3b}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:28px;width:100%;max-width:520px}
+h1{margin:0 0 6px;font-size:22px}p,ol{margin:0 0 14px;color:var(--muted);font-size:14px}ol{padding-left:20px}
+label{display:block;font-size:13px;margin:14px 0 6px}select,textarea{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--fg);font:inherit}
+textarea{min-height:110px;font:13px monospace}
+button{margin-top:18px;width:100%;padding:13px;border:0;border-radius:10px;background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}
+button:disabled{opacity:.6}ul{padding-left:18px;font-size:14px}.ok{color:#16a34a}.err{color:#dc2626}
+</style></head><body><div class="card"><h1>Connect with a token</h1>
+<ol><li>Open Meta's Graph API Explorer and pick the <b>Fans</b> app.</li>
+<li>Click <b>Generate Access Token</b> and tick the pages to add.</li><li>Paste the token below.</li></ol>
+<label for="g">These pages will post:</label>
+<select id="g"><option value="clipper">Clips (clipper pages)</option><option value="promo">Mia promo content</option></select>
+<label for="t">Access token</label><textarea id="t" autocomplete="off" spellcheck="false"></textarea>
+<button id="b">Connect pages</button><div id="o" role="status"></div></div>
+<script>
+const b=document.getElementById('b'),o=document.getElementById('o');
+b.onclick=async()=>{let key=localStorage.getItem('adminKey')||'';if(!key){key=prompt('Enter admin key:')||'';localStorage.setItem('adminKey',key)}
+o.replaceChildren();b.disabled=true;
+try{const r=await fetch('/connect/token',{method:'POST',headers:{'X-Admin-Key':key,'Content-Type':'application/json'},
+body:JSON.stringify({token:document.getElementById('t').value.trim(),group:document.getElementById('g').value})});
+const j=await r.json();if(r.status===401)localStorage.removeItem('adminKey');
+const h=document.createElement('p');h.className=j.ok?'ok':'err';h.textContent=j.title||j.error||'Something went wrong.';o.append(h);
+if(j.lines){const u=document.createElement('ul');for(const l of j.lines){const li=document.createElement('li');li.textContent=l;u.append(li)}o.append(u)}
+if(j.ok)document.getElementById('t').value='';
+}catch(e){const h=document.createElement('p');h.className='err';h.textContent='Network error.';o.append(h)}b.disabled=false};
+</script></body></html>"""
+
+@app.route("/connect/token", methods=["GET"])
+def connect_token_page():
+    return Response(CONNECT_TOKEN_HTML, mimetype="text/html")
+
+@app.route("/connect/token", methods=["POST"])
+def connect_token_submit():
+    denied = _admin_guard()
+    if denied:
+        return denied
+    if not (FB_APP_ID and FB_APP_SECRET):
+        return jsonify({"error": "FB_APP_ID and FB_APP_SECRET are not set on the server"}), 503
+    data = request.get_json(silent=True) or {}
+    token, group = (data.get("token") or "").strip(), data.get("group", "clipper")
+    if len(token) < 20 or group not in PAGE_GROUPS:
+        return jsonify({"error": "paste a valid access token and choose a group"}), 400
+    try:
+        ok, title, lines = _connect_with_token(
+            token, group, "No pages came back. In Graph API Explorer, regenerate the token and tick the pages in the dialog.")
+        return jsonify({"ok": ok, "title": title, "lines": lines}), (200 if ok else 400)
+    except Exception as e:
+        print(f"[connect-token] {type(e).__name__}")
+        return jsonify({"ok": False, "title": "Something went wrong", "lines": ["Check the server logs and try again."]}), 500
 
 # ── LEGAL PAGES (required by Meta for app settings) ───────────────────────────────
 
