@@ -1453,6 +1453,65 @@ def connect_callback():
         print(f"[connect] {e}")
         return _result_page("Something went wrong", ["Check the server logs and try again."], ok=False), 500
 
+# ── LEGAL PAGES (required by Meta for app settings) ───────────────────────────────
+
+BRAND_NAME = os.environ.get("BRAND_NAME", "Fan Page Manager")
+CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL")
+
+def _legal_page(title, sections):
+    import html
+    contact = (f'<a href="mailto:{html.escape(CONTACT_EMAIL)}">{html.escape(CONTACT_EMAIL)}</a>'
+               if CONTACT_EMAIL else "a direct message to any of our Instagram pages")
+    body = "".join(f"<h2>{html.escape(h)}</h2>" + "".join(f"<p>{p.replace('{contact}', contact)}</p>" for p in ps)
+                   for h, ps in sections)
+    return Response(f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)} - {html.escape(BRAND_NAME)}</title>
+<style>:root{{--bg:#fff;--fg:#1c1b22;--muted:#6b6a78}}@media(prefers-color-scheme:dark){{:root{{--bg:#0f0e14;--fg:#f1f0f7;--muted:#9a98aa}}}}
+body{{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,sans-serif;padding:24px 16px;max-width:680px;margin-inline:auto}}
+h1{{font-size:26px;margin:0 0 4px}}h2{{font-size:18px;margin:28px 0 6px}}p{{margin:0 0 10px}}.m{{color:var(--muted);font-size:14px}}a{{color:#7c3aed}}</style></head>
+<body><h1>{html.escape(title)}</h1><p class="m">{html.escape(BRAND_NAME)} &middot; Last updated October 2026</p>{body}</body></html>""",
+                    mimetype="text/html")
+
+@app.route("/privacy", methods=["GET"])
+def privacy_page():
+    return _legal_page("Privacy Policy", [
+        ("Who we are", [f"{BRAND_NAME} operates social media pages that share short video clips and quote graphics, and a website where people can submit clip links for us to consider posting."]),
+        ("What we collect", [
+            "Clip submissions: the clip link you submit, the optional name you type, and the time of submission. Your IP address is used briefly to limit spam and is not stored with your submission.",
+            "Facebook and Instagram account connection: when an administrator connects a page, we receive and store the page's name, ID, linked Instagram account ID and an access token so we can publish posts to that page. We do not collect personal profile information, friends lists or private messages.",
+            "Post analytics: public engagement numbers for posts we publish (likes, comments, reach, saves) through Meta's tools."]),
+        ("How we use it", [
+            "We use this information only to review and publish clips, to publish and measure content on our own pages, and to prevent abuse. We do not sell your information and we do not use it for advertising."]),
+        ("Sharing", [
+            "We share data only with the services needed to run the pages: Meta (to publish posts), our hosting and database providers, and image or video hosting services used to deliver posts. We may disclose information if required by law."]),
+        ("Retention and deletion", [
+            "Submissions are kept until reviewed and then for a limited period for moderation records. Page access tokens are kept while a page is connected and deleted when it is disconnected. To request deletion of anything we hold about you, contact us via {contact} or see our data deletion page at /data-deletion."]),
+        ("Contact", ["Questions about this policy: {contact}."]),
+    ])
+
+@app.route("/terms", methods=["GET"])
+def terms_page():
+    return _legal_page("Terms of Service", [
+        ("About this service", [f"{BRAND_NAME} runs social media pages featuring clips from live streams and a form to submit clip links. By using the website you agree to these terms."]),
+        ("Submitting clips", [
+            "Only submit links to clips that you have the right to share or that are publicly available on Twitch or Kick. Submissions are reviewed, and we may decline, edit, or remove any clip at our discretion. Submitting a link does not guarantee it will be posted.",
+            "Do not submit content that is illegal, hateful, harassing, sexually explicit involving minors, or that violates anyone's privacy or rights."]),
+        ("Credit and takedowns", [
+            "Clips we post credit the original channel. All clips remain the property of their creators and the streamers shown. We are an unofficial clip page and are not affiliated with any streamer, Twitch, Kick, Instagram or Meta. If you are a creator and want a clip credited differently or removed, contact us via {contact} and we will act promptly."]),
+        ("Acceptable use", ["Do not abuse the submission form, attempt to bypass rate limits, or interfere with the service."]),
+        ("Disclaimer and changes", [
+            "The service is provided as is, without warranties. We may change or discontinue it, and update these terms, at any time. Continued use means you accept the updated terms."]),
+        ("Contact", ["Questions: {contact}."]),
+    ])
+
+@app.route("/data-deletion", methods=["GET"])
+def data_deletion_page():
+    return _legal_page("Data Deletion", [
+        ("How to request deletion", [
+            "To have information we hold about you deleted, contact us via {contact} with the clip link or page name involved. We will remove it within 30 days and confirm once it is done.",
+            "If you connected a page to this service, you can also remove access at any time in your Facebook settings under Business Integrations (or Apps and Websites) by removing this app. Doing so revokes our access token."]),
+    ])
+
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
 init_db()
