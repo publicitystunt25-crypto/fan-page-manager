@@ -436,7 +436,9 @@ def download_clip(url):
         path = ydl.prepare_filename(info)
     return path, info
 
-BAR_H = 110
+BAR_H = 160
+BAR_LIFT = 330   # px above the bottom on portrait clips: clears IG's caption/profile area
+SIDE_SAFE = 150  # px kept free on both sides: IG's like/comment/share buttons sit on the right
 # Output size kept modest: the Render instance is small and 1080x1920 encodes ran it out of memory
 OUT_W = int(os.environ.get("CLIP_OUT_W", "720"))
 OUT_H = OUT_W * 16 // 9 // 2 * 2
@@ -451,7 +453,7 @@ def _bold_font(size):
     return ImageFont.load_default()
 
 def make_brand_bar(slug, platform):
-    """1080xBAR_H black bar: platform wordmark on the left, PLATFORM.COM/CHANNEL on the right."""
+    """1080xBAR_H black bar, centered: platform wordmark on top, PLATFORM.COM/CHANNEL underneath."""
     W = 1080
     bar = Image.new("RGB", (W, BAR_H), (0, 0, 0))
     d = ImageDraw.Draw(bar)
@@ -459,18 +461,24 @@ def make_brand_bar(slug, platform):
         word, color, domain = "KICK", (83, 252, 24), "KICK.COM"
     else:
         word, color, domain = "TWITCH", (145, 70, 255), "TWITCH.TV"
-    logo_font = _bold_font(78)
-    d.text((24, (BAR_H - 78) // 2 - 8), word, font=logo_font, fill=color)
-    text = f"{domain}/{slug}".upper()
-    size = 46
-    while size > 22:
-        f = _bold_font(size)
-        tw = d.textbbox((0, 0), text, font=f)[2]
-        if tw <= W - 48 - 260:
-            break
-        size -= 2
-    tw = d.textbbox((0, 0), text, font=f)[2]
-    d.text((W - 24 - tw, (BAR_H - size) // 2 - 4), text, font=f, fill=(255, 255, 255))
+    max_w = W - 2 * SIDE_SAFE
+
+    def fit(text, size, min_size):
+        while True:
+            f = _bold_font(size)
+            box = d.textbbox((0, 0), text, font=f)
+            if box[2] - box[0] <= max_w or size <= min_size:
+                return f, box
+            size -= 2
+
+    lf, lb = fit(word, 76, 40)
+    uf, ub = fit(f"{domain}/{slug}".upper(), 42, 20)
+    lh, uh = lb[3] - lb[1], ub[3] - ub[1]
+    gap = 14
+    y = (BAR_H - (lh + gap + uh)) // 2
+    d.text(((W - (lb[2] - lb[0])) // 2 - lb[0], y - lb[1]), word, font=lf, fill=color)
+    d.text(((W - (ub[2] - ub[0])) // 2 - ub[0], y + lh + gap - ub[1]),
+           f"{domain}/{slug}".upper(), font=uf, fill=(255, 255, 255))
     path = os.path.join(CLIP_DIR, f"{uuid.uuid4().hex}_bar.png")
     bar.save(path)
     return path
@@ -502,7 +510,7 @@ def render_clip(src_path, slug, platform):
         portrait = ch / cw > 1.2
     if portrait:
         fc = (f"[0:v]{pre}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[base];"
-              f"[base][1:v]overlay=0:H-{BAR_H}[v]")
+              f"[base][1:v]overlay=0:H-{BAR_H + BAR_LIFT}[v]")
     else:
         fc = (f"[0:v]{pre}split[a][b];"
               "[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=30:5[bg];"
@@ -532,7 +540,7 @@ def channel_slug_from(url, info, override):
 
 def generate_clip_caption(title, channel_name, platform, handle_tag, hint=""):
     """AI-written caption; falls back to a plain template."""
-    fallback = f"{title}\n\n{channel_name} on {platform.capitalize()} 🔥\n\n{handle_tag}"
+    fallback = f"{title}\n\n{handle_tag} 🔥"
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         return fallback
