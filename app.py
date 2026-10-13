@@ -1,7 +1,6 @@
 import os
 import time
 import threading
-import datetime as _dt
 import requests
 from flask import Flask, jsonify, request
 from psycopg2.extras import RealDictCursor
@@ -10,8 +9,7 @@ import psycopg2
 app = Flask(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-USER_ACCESS_TOKEN = os.environ.get("FB_USER_TOKEN")   # long-lived user token
-MIA_IG_ID = os.environ.get("MIA_IG_ID")               # Mia's IG business account ID
+USER_ACCESS_TOKEN = os.environ.get("FB_USER_TOKEN")
 GRAPH = "https://graph.facebook.com/v19.0"
 
 # ── DB ────────────────────────────────────────────────────────────────────────
@@ -33,16 +31,14 @@ def init_db():
             active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
-        CREATE TABLE IF NOT EXISTS repost_queue (
+        CREATE TABLE IF NOT EXISTS post_log (
             id SERIAL PRIMARY KEY,
-            source_ig_media_id TEXT NOT NULL,
             fan_page_id INTEGER REFERENCES fan_pages(id),
-            status TEXT DEFAULT 'pending',
-            scheduled_at TIMESTAMPTZ DEFAULT NOW(),
-            posted_at TIMESTAMPTZ,
-            ig_creation_id TEXT,
-            error TEXT,
-            UNIQUE(source_ig_media_id, fan_page_id)
+            ig_post_id TEXT,
+            caption TEXT,
+            media_url TEXT,
+            posted_at TIMESTAMPTZ DEFAULT NOW(),
+            error TEXT
         );
         CREATE TABLE IF NOT EXISTS analytics_snapshots (
             id SERIAL PRIMARY KEY,
@@ -63,30 +59,14 @@ def init_db():
 # ── INSTAGRAM HELPERS ─────────────────────────────────────────────────────────
 
 def get_ig_for_page(page_access_token, fb_page_id):
-    """Get the IG business account linked to a FB page."""
     r = requests.get(f"{GRAPH}/{fb_page_id}",
                      params={"fields": "instagram_business_account", "access_token": page_access_token},
                      timeout=10)
     data = r.json()
     return data.get("instagram_business_account", {}).get("id")
 
-def get_media_info(ig_media_id, token):
-    """Fetch media details from Mia's IG."""
-    r = requests.get(f"{GRAPH}/{ig_media_id}",
-                     params={"fields": "media_type,media_url,thumbnail_url,caption,permalink",
-                             "access_token": token},
-                     timeout=10)
-    return r.json()
-
-def repost_to_page(ig_account_id, page_token, media_info):
-    """Repost a single media item to one fan page IG account."""
-    media_type = media_info.get("media_type", "IMAGE")
-    caption = media_info.get("caption", "")
-    media_url = media_info.get("media_url") or media_info.get("thumbnail_url")
-
-    if not media_url:
-        return None, "no media_url"
-
+def post_to_ig(ig_account_id, page_token, media_url, caption, media_type="IMAGE"):
+    """Post a photo or video to one IG account."""
     if media_type == "VIDEO":
         payload = {"video_url": media_url, "media_type": "REELS", "caption": caption,
                    "access_token": page_token}
@@ -99,7 +79,6 @@ def repost_to_page(ig_account_id, page_token, media_info):
     if not creation_id:
         return None, result.get("error", {}).get("message", str(result))
 
-    # publish
     pub = requests.post(f"{GRAPH}/{ig_account_id}/media_publish",
                         data={"creation_id": creation_id, "access_token": page_token},
                         timeout=30)
@@ -110,93 +89,35 @@ def repost_to_page(ig_account_id, page_token, media_info):
 
     return post_id, None
 
-# ── BACKGROUND LOOPS ──────────────────────────────────────────────────────────
-
-_repost_lock = threading.Lock()
-
-def _fetch_mia_recent_media():
-    """Pull Mia's last 20 posts."""
-    r = requests.get(f"{GRAPH}/{MIA_IG_ID}/media",
-                     params={"fields": "id,media_type,media_url,thumbnail_url,caption,timestamp",
-                             "limit": 20, "access_token": USER_ACCESS_TOKEN},
-                     timeout=15)
-    return r.json().get("data", [])
-
-def _queue_new_posts():
-    """Find Mia's posts not yet queued, insert into repost_queue for all active pages."""
+def _post_to_all_pages(media_url, caption, media_type="IMAGE"):
+    """Background thread — posts to all active fan pages with staggered delays."""
     try:
-        posts = _fetch_mia_recent_media()
-        if not posts:
-            return
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT id FROM fan_pages WHERE active = TRUE AND ig_account_id IS NOT NULL")
+        cur.execute("SELECT id, ig_account_id, page_access_token, page_name FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL")
         pages = cur.fetchall()
-        for post in posts:
-            mid = post["id"]
-            for page in pages:
-                cur.execute("""
-                    INSERT INTO repost_queue (source_ig_media_id, fan_page_id)
-                    VALUES (%s, %s)
-                    ON CONFLICT (source_ig_media_id, fan_page_id) DO NOTHING
-                """, (mid, page["id"]))
-        conn.commit()
         cur.close()
         conn.close()
+
+        for page in pages:
+            post_id, err = post_to_ig(page["ig_account_id"], page["page_access_token"],
+                                      media_url, caption, media_type)
+            conn2 = get_conn()
+            cur2 = conn2.cursor()
+            cur2.execute("""
+                INSERT INTO post_log (fan_page_id, ig_post_id, caption, media_url, error)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (page["id"], post_id, caption, media_url, err))
+            conn2.commit()
+            cur2.close()
+            conn2.close()
+            if err:
+                print(f"[post] {page['page_name']} error: {err}")
+            else:
+                print(f"[post] {page['page_name']} → {post_id}")
+            time.sleep(3)
     except Exception as e:
-        print(f"[queue-new-posts] {e}")
-
-def _process_repost_queue():
-    """Process pending reposts, staggered to avoid rate limits."""
-    with _repost_lock:
-        try:
-            conn = get_conn()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute("""
-                SELECT rq.id, rq.source_ig_media_id, rq.fan_page_id,
-                       fp.ig_account_id, fp.page_access_token
-                FROM repost_queue rq
-                JOIN fan_pages fp ON fp.id = rq.fan_page_id
-                WHERE rq.status = 'pending'
-                  AND fp.active = TRUE
-                ORDER BY rq.scheduled_at ASC
-                LIMIT 20
-            """)
-            jobs = cur.fetchall()
-            cur.close()
-            conn.close()
-
-            for job in jobs:
-                media_info = get_media_info(job["source_ig_media_id"], USER_ACCESS_TOKEN)
-                post_id, err = repost_to_page(job["ig_account_id"],
-                                              job["page_access_token"], media_info)
-                conn2 = get_conn()
-                cur2 = conn2.cursor()
-                if post_id:
-                    cur2.execute("""
-                        UPDATE repost_queue
-                        SET status='done', posted_at=NOW(), ig_creation_id=%s
-                        WHERE id=%s
-                    """, (post_id, job["id"]))
-                    print(f"[repost] queued job {job['id']} → posted {post_id}")
-                else:
-                    cur2.execute("""
-                        UPDATE repost_queue SET status='error', error=%s WHERE id=%s
-                    """, (err, job["id"]))
-                    print(f"[repost] job {job['id']} error: {err}")
-                conn2.commit()
-                cur2.close()
-                conn2.close()
-                time.sleep(3)  # stagger between pages
-        except Exception as e:
-            print(f"[process-queue] {e}")
-
-def _repost_loop():
-    time.sleep(15)
-    while True:
-        _queue_new_posts()
-        _process_repost_queue()
-        time.sleep(300)  # check every 5 minutes
+        print(f"[post-all] {e}")
 
 def _analytics_loop():
     time.sleep(30)
@@ -239,7 +160,7 @@ def _analytics_loop():
                     print(f"[analytics] page {page['id']}: {pe}")
         except Exception as e:
             print(f"[analytics-loop] {e}")
-        time.sleep(3600)  # pull analytics every hour
+        time.sleep(3600)
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
 
@@ -249,22 +170,25 @@ def index():
 
 @app.route("/sync-pages", methods=["POST", "GET"])
 def sync_pages():
-    """Pull all FB pages from /me/accounts, find their linked IG accounts, save to DB."""
+    """Pull all FB pages, find linked IG accounts, save to DB."""
     try:
         r = requests.get(f"{GRAPH}/me/accounts",
-                         params={"access_token": USER_ACCESS_TOKEN, "limit": 100},
+                         params={"fields": "id,name,access_token,instagram_business_account",
+                                 "access_token": USER_ACCESS_TOKEN, "limit": 100},
                          timeout=15)
         pages = r.json().get("data", [])
         if not pages:
             return jsonify({"error": "no pages returned", "raw": r.json()}), 400
 
-        added, updated, skipped = 0, 0, 0
+        added, updated = 0, 0
         for page in pages:
             fb_page_id = page["id"]
             page_name = page.get("name", "")
             page_token = page.get("access_token", "")
+            ig_id = page.get("instagram_business_account", {}).get("id")
 
-            ig_id = get_ig_for_page(page_token, fb_page_id)
+            if not ig_id:
+                ig_id = get_ig_for_page(page_token, fb_page_id)
 
             conn = get_conn()
             cur = conn.cursor()
@@ -275,8 +199,10 @@ def sync_pages():
                   SET ig_account_id = EXCLUDED.ig_account_id,
                       page_name = EXCLUDED.page_name,
                       page_access_token = EXCLUDED.page_access_token
+                RETURNING (xmax = 0) as inserted
             """, (fb_page_id, ig_id, page_name, page_token))
-            if cur.rowcount == 1:
+            row = cur.fetchone()
+            if row and row[0]:
                 added += 1
             else:
                 updated += 1
@@ -288,9 +214,25 @@ def sync_pages():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/post", methods=["POST"])
+def post_content():
+    """Post content to all active fan pages.
+    Body: { media_url, caption, media_type (optional, IMAGE or VIDEO) }
+    """
+    data = request.json or {}
+    media_url = data.get("media_url")
+    caption = data.get("caption", "")
+    media_type = data.get("media_type", "IMAGE").upper()
+
+    if not media_url:
+        return jsonify({"error": "media_url required"}), 400
+
+    threading.Thread(target=_post_to_all_pages,
+                     args=(media_url, caption, media_type), daemon=True).start()
+    return jsonify({"status": "posting to all active pages", "media_url": media_url})
+
 @app.route("/pages", methods=["GET"])
 def list_pages():
-    """List all fan pages."""
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -304,7 +246,6 @@ def list_pages():
 
 @app.route("/pages/<int:page_id>/toggle", methods=["POST"])
 def toggle_page(page_id):
-    """Enable or disable a fan page."""
     try:
         conn = get_conn()
         cur = conn.cursor()
@@ -319,59 +260,44 @@ def toggle_page(page_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route("/repost-now", methods=["POST"])
-def repost_now():
-    """Manually trigger a repost cycle."""
-    threading.Thread(target=_queue_new_posts, daemon=True).start()
-    threading.Thread(target=_process_repost_queue, daemon=True).start()
-    return jsonify({"status": "repost cycle triggered"})
-
-@app.route("/queue", methods=["GET"])
-def view_queue():
-    """View repost queue status."""
+@app.route("/post-log", methods=["GET"])
+def post_log():
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
-            SELECT status, COUNT(*) as count
-            FROM repost_queue
-            GROUP BY status
+            SELECT pl.id, fp.page_name, pl.ig_post_id, pl.caption,
+                   pl.posted_at, pl.error
+            FROM post_log pl
+            JOIN fan_pages fp ON fp.id = pl.fan_page_id
+            ORDER BY pl.posted_at DESC
+            LIMIT 100
         """)
-        summary = cur.fetchall()
-        cur.execute("""
-            SELECT rq.id, rq.source_ig_media_id, fp.page_name, rq.status,
-                   rq.scheduled_at, rq.posted_at, rq.error
-            FROM repost_queue rq
-            JOIN fan_pages fp ON fp.id = rq.fan_page_id
-            ORDER BY rq.scheduled_at DESC
-            LIMIT 50
-        """)
-        recent = cur.fetchall()
+        rows = cur.fetchall()
         cur.close()
         conn.close()
-        return jsonify({"summary": summary, "recent": recent})
+        return jsonify({"posts": rows})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/analytics", methods=["GET"])
 def analytics():
-    """Analytics summary across all fan pages."""
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
-            SELECT fp.page_name, fp.ig_account_id,
-                   SUM(a.impressions) as total_impressions,
-                   SUM(a.reach) as total_reach,
-                   SUM(a.likes) as total_likes,
-                   SUM(a.comments) as total_comments,
-                   SUM(a.saves) as total_saves,
+            SELECT fp.page_name,
+                   SUM(a.impressions) as impressions,
+                   SUM(a.reach) as reach,
+                   SUM(a.likes) as likes,
+                   SUM(a.comments) as comments,
+                   SUM(a.saves) as saves,
                    COUNT(DISTINCT a.ig_media_id) as posts_tracked
             FROM analytics_snapshots a
             JOIN fan_pages fp ON fp.id = a.fan_page_id
             WHERE a.pulled_at >= NOW() - INTERVAL '7 days'
-            GROUP BY fp.id, fp.page_name, fp.ig_account_id
-            ORDER BY total_impressions DESC
+            GROUP BY fp.page_name
+            ORDER BY impressions DESC
         """)
         rows = cur.fetchall()
         cur.execute("""
@@ -389,7 +315,6 @@ def analytics():
 
 @app.route("/analytics/today", methods=["GET"])
 def analytics_today():
-    """Today's analytics across all pages."""
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -420,7 +345,6 @@ def migrate():
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
 init_db()
-threading.Thread(target=_repost_loop, daemon=True).start()
 threading.Thread(target=_analytics_loop, daemon=True).start()
 
 if __name__ == "__main__":
