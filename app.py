@@ -1390,27 +1390,49 @@ def connect_start():
         "state": _sign_state(group), "scope": FB_SCOPES, "response_type": "code"})
     return jsonify({"url": url})
 
-def _connect_with_token(short_token, group, hint_no_pages, exchange=True):
-    """Exchange a user token for a long-lived one (skipped for system user tokens, which never expire),
-    save it, then add/refresh every page it can see. Returns (ok, title, lines)."""
+def _fetch_pages(user_token):
+    """Pages the token can see: [{id, name, access_token, instagram_business_account{id,username}}]."""
+    r = requests.get(f"{GRAPH}/me/accounts",
+                     params={"fields": "id,name,access_token,instagram_business_account{id,username}",
+                             "access_token": user_token, "limit": 100}, timeout=30).json()
+    return r.get("data", []), r.get("error", {}).get("message", "")
+
+def _preview_pages(user_token):
+    """Nothing is saved: list the pages so the admin can pick which ones to add."""
+    pages, err = _fetch_pages(user_token)
+    existing = {}
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT fb_page_id, page_group FROM fan_pages")
+    for fb_id, grp in cur.fetchall():
+        existing[fb_id] = grp
+    cur.close()
+    conn.close()
+    out = []
+    for p in pages:
+        ig = p.get("instagram_business_account") or {}
+        out.append({"id": p["id"], "name": p.get("name", p["id"]), "ig": ig.get("username") or ig.get("id"),
+                    "has_ig": bool(ig.get("id")), "group": existing.get(p["id"])})
+    return out, err
+
+def _connect_with_token(short_token, group, only, exchange=True):
+    """Exchange a user token for a long-lived one (skipped for system user / saved tokens), save it,
+    then add or refresh ONLY the pages whose ids are in `only`. Returns (ok, title, lines)."""
     base = {"client_id": FB_APP_ID, "client_secret": FB_APP_SECRET}
-    long_ = {"access_token": short_token} if not exchange else requests.get(f"{GRAPH}/oauth/access_token",
-                         params={**base, "grant_type": "fb_exchange_token",
-                                 "fb_exchange_token": short_token}, timeout=20).json()
+    long_ = {"access_token": short_token} if not exchange else requests.get(
+        f"{GRAPH}/oauth/access_token",
+        params={**base, "grant_type": "fb_exchange_token", "fb_exchange_token": short_token}, timeout=20).json()
     user_token = long_.get("access_token")
     if not user_token:
         return False, "Token exchange failed", [long_.get("error", {}).get("message", "no token returned")]
     _save_user_token(user_token)
 
-    r = requests.get(f"{GRAPH}/me/accounts",
-                     params={"fields": "id,name,access_token,instagram_business_account{id,username}",
-                             "access_token": user_token, "limit": 100}, timeout=30).json()
-    pages = r.get("data", [])
-    if not pages:
-        return False, "No pages returned", [hint_no_pages, r.get("error", {}).get("message", "")]
-
+    pages, err = _fetch_pages(user_token)   # re-read with the long-lived token: its page tokens never expire
+    wanted = set(only)
     lines, added = [], 0
     for p in pages:
+        if p["id"] not in wanted:
+            continue
         name, token = p.get("name", p["id"]), p.get("access_token")
         ig = (p.get("instagram_business_account") or {})
         if not ig.get("id"):
@@ -1432,30 +1454,35 @@ def _connect_with_token(short_token, group, hint_no_pages, exchange=True):
         forever = _token_never_expires(token)
         tok = "token never expires" if forever else ("token expires - check app settings" if forever is False else "token saved")
         who = f"@{ig['username']}" if ig.get("username") else "Instagram linked"
-        lines.append(f"{name} ({who}): {'added to ' + group if inserted else 'updated'} - {tok}")
+        lines.append(f"{name} ({who}): {'added to ' + group if inserted else 'updated (group unchanged)'} - {tok}")
         added += 1
+    if not added and not lines:
+        lines.append("None of the selected pages were visible to the token." + (f" {err}" if err else ""))
     return added > 0, f"Connected {added} page(s)", lines
 
 @app.route("/connect/callback", methods=["GET"])
 def connect_callback():
+    """Facebook login lands here. Saves a long-lived user token only; pages are chosen on /connect/token."""
     if not (ADMIN_KEY and FB_APP_ID and FB_APP_SECRET):
         return _result_page("Not configured", ["ADMIN_KEY, FB_APP_ID and FB_APP_SECRET must be set."], ok=False), 503
-    group = _check_state(request.args.get("state"))
-    if not group:
+    if not _check_state(request.args.get("state")):
         return _result_page("Link expired", ["Start again from the Connect page."], ok=False), 400
     if request.args.get("error") or not request.args.get("code"):
         return _result_page("Not connected", [request.args.get("error_description", "Facebook login was cancelled.")], ok=False), 400
     try:
+        base = {"client_id": FB_APP_ID, "client_secret": FB_APP_SECRET}
         short = requests.get(f"{GRAPH}/oauth/access_token",
-                             params={"client_id": FB_APP_ID, "client_secret": FB_APP_SECRET,
-                                     "redirect_uri": _connect_redirect_uri(),
+                             params={**base, "redirect_uri": _connect_redirect_uri(),
                                      "code": request.args["code"]}, timeout=20).json()
         if "access_token" not in short:
             return _result_page("Facebook login failed", [short.get("error", {}).get("message", "no token returned")], ok=False), 400
-        ok, title, lines = _connect_with_token(
-            short["access_token"], group,
-            "Facebook returned no pages. In the login dialog, choose 'Edit settings' and tick the pages to allow.")
-        return _result_page(title, lines, ok=ok), (200 if ok else 400)
+        long_ = requests.get(f"{GRAPH}/oauth/access_token",
+                             params={**base, "grant_type": "fb_exchange_token",
+                                     "fb_exchange_token": short["access_token"]}, timeout=20).json()
+        if "access_token" not in long_:
+            return _result_page("Token exchange failed", [long_.get("error", {}).get("message", "no token returned")], ok=False), 400
+        _save_user_token(long_["access_token"])
+        return _result_page("Login saved", ["Now open /connect/token, leave the token box empty, click Find pages and choose which pages to add."])
     except Exception as e:
         print(f"[connect] {type(e).__name__}")   # not str(e): request errors can contain the URL with tokens
         return _result_page("Something went wrong", ["Check the server logs and try again."], ok=False), 500
@@ -1469,55 +1496,48 @@ CONNECT_TOKEN_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:28px;width:100%;max-width:520px}
 h1{margin:0 0 6px;font-size:22px}p,ol{margin:0 0 14px;color:var(--muted);font-size:14px}ol{padding-left:20px}
 label{display:block;font-size:13px;margin:14px 0 6px}select,textarea{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--fg);font:inherit}
-textarea{min-height:110px;font:13px monospace}
+textarea{min-height:90px;font:13px monospace}
 button{margin-top:18px;width:100%;padding:13px;border:0;border-radius:10px;background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}
 button:disabled{opacity:.6}ul{padding-left:18px;font-size:14px}.ok{color:#16a34a}.err{color:#dc2626}
-</style></head><body><div class="card"><h1>Connect with a token</h1>
-<ol><li>Open Meta's Graph API Explorer and pick the <b>Fans</b> app.</li>
-<li>Click <b>Generate Access Token</b> and tick the pages to add.</li><li>Paste the token below.</li></ol>
-<label for="g">These pages will post:</label>
+.pg{display:flex;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--line);font-size:15px}.pg small{color:var(--muted)}
+</style></head><body><div class="card"><h1>Connect pages</h1>
+<ol><li>Paste a token (Graph API Explorer user token, or a system user token). Leave it empty to reuse the saved one.</li>
+<li>Click <b>Find pages</b>, tick only the pages you want, then <b>Add selected pages</b>.</li></ol>
+<label for="g">New pages will post:</label>
 <select id="g"><option value="clipper">Clips (clipper pages)</option><option value="promo">Mia promo content</option></select>
-<label for="t">Access token</label><textarea id="t" autocomplete="off" spellcheck="false"></textarea>
+<label for="t">Access token (optional)</label><textarea id="t" autocomplete="off" spellcheck="false"></textarea>
 <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="sys"> System user token (never expires)</label>
-<button id="b">Connect pages</button><button id="sync" style="background:transparent;color:var(--accent);border:1px solid var(--accent)">Sync new pages with saved token</button><div id="o" role="status"></div></div>
+<button id="find">Find pages</button><div id="o" role="status"></div></div>
 <script>
-const b=document.getElementById('b'),o=document.getElementById('o'),sy=document.getElementById('sync');
-async function go(url,payload){let key=localStorage.getItem('adminKey')||'';if(!key){key=prompt('Enter admin key:')||'';localStorage.setItem('adminKey',key)}
-o.replaceChildren();b.disabled=sy.disabled=true;
-try{const r=await fetch(url,{method:'POST',headers:{'X-Admin-Key':key,'Content-Type':'application/json'},
-body:JSON.stringify(payload)});
-const j=await r.json();if(r.status===401)localStorage.removeItem('adminKey');
-const h=document.createElement('p');h.className=j.ok?'ok':'err';h.textContent=j.title||j.error||'Something went wrong.';o.append(h);
-if(j.lines){const u=document.createElement('ul');for(const l of j.lines){const li=document.createElement('li');li.textContent=l;u.append(li)}o.append(u)}
-if(j.ok)document.getElementById('t').value='';
-}catch(e){const h=document.createElement('p');h.className='err';h.textContent='Network error.';o.append(h)}b.disabled=sy.disabled=false}
-b.onclick=()=>go('/connect/token',{token:document.getElementById('t').value.trim(),group:document.getElementById('g').value,system:document.getElementById('sys').checked});
-sy.onclick=()=>go('/connect/sync',{group:document.getElementById('g').value});
+const o=document.getElementById('o'),find=document.getElementById('find');let tokenUsed=false;
+function say(cls,text){const h=document.createElement('p');h.className=cls;h.textContent=text;o.append(h)}
+async function post(payload){let key=localStorage.getItem('adminKey')||'';if(!key){key=prompt('Enter admin key:')||'';localStorage.setItem('adminKey',key)}
+const r=await fetch('/connect/token',{method:'POST',headers:{'X-Admin-Key':key,'Content-Type':'application/json'},body:JSON.stringify(payload)});
+if(r.status===401)localStorage.removeItem('adminKey');return r.json()}
+function base(){return {token:document.getElementById('t').value.trim(),group:document.getElementById('g').value,system:document.getElementById('sys').checked}}
+find.onclick=async()=>{o.replaceChildren();find.disabled=true;
+try{const j=await post({...base(),preview:true});
+if(!j.pages){say('err',j.error||j.title||'Something went wrong.');find.disabled=false;return}
+if(!j.pages.length){say('err','No pages found for this token.');find.disabled=false;return}
+const boxes=[];for(const p of j.pages){const row=document.createElement('label');row.className='pg';
+const cb=document.createElement('input');cb.type='checkbox';cb.disabled=!p.has_ig;cb.value=p.id;boxes.push(cb);
+const t=document.createElement('span');t.textContent=p.name+' ';const s=document.createElement('small');
+s.textContent=!p.has_ig?'(no Instagram linked)':'@'+p.ig+(p.group?' - already added as '+p.group:'');t.append(s);row.append(cb,t);o.append(row)}
+const add=document.createElement('button');add.textContent='Add selected pages';
+add.onclick=async()=>{const ids=boxes.filter(b=>b.checked).map(b=>b.value);if(!ids.length){alert('Tick at least one page.');return}
+add.disabled=true;const k=await post({...base(),only:ids});o.replaceChildren();say(k.ok?'ok':'err',k.title||k.error||'Something went wrong.');
+if(k.lines){const u=document.createElement('ul');for(const l of k.lines){const li=document.createElement('li');li.textContent=l;u.append(li)}o.append(u)}
+if(k.ok)document.getElementById('t').value=''};o.append(add)
+}catch(e){say('err','Network error.')}find.disabled=false};
 </script></body></html>"""
 
 @app.route("/connect/token", methods=["GET"])
 def connect_token_page():
     return Response(CONNECT_TOKEN_HTML, mimetype="text/html")
 
-@app.route("/connect/sync", methods=["POST"])
-def connect_sync():
-    """Re-read the pages the saved token can see and add any new ones (existing pages keep their group)."""
-    denied = _admin_guard()
-    if denied:
-        return denied
-    group = (request.get_json(silent=True) or {}).get("group", "clipper")
-    token = get_user_token()
-    if not token or group not in PAGE_GROUPS:
-        return jsonify({"ok": False, "title": "No saved token", "lines": ["Paste a token on this page first."]}), 400
-    try:
-        ok, title, lines = _connect_with_token(token, group, "No pages visible to the saved token.", exchange=False)
-        return jsonify({"ok": ok, "title": title, "lines": lines}), (200 if ok else 400)
-    except Exception as e:
-        print(f"[connect-sync] {type(e).__name__}")
-        return jsonify({"ok": False, "title": "Something went wrong", "lines": ["Check the server logs and try again."]}), 500
-
 @app.route("/connect/token", methods=["POST"])
 def connect_token_submit():
+    """preview=true lists pages (saves nothing). Adding requires an explicit `only` list of page ids."""
     denied = _admin_guard()
     if denied:
         return denied
@@ -1525,15 +1545,24 @@ def connect_token_submit():
         return jsonify({"error": "FB_APP_ID and FB_APP_SECRET are not set on the server"}), 503
     data = request.get_json(silent=True) or {}
     token, group = (data.get("token") or "").strip(), data.get("group", "clipper")
-    if len(token) < 20 or group not in PAGE_GROUPS:
-        return jsonify({"error": "paste a valid access token and choose a group"}), 400
+    if group not in PAGE_GROUPS:
+        return jsonify({"error": "choose a group"}), 400
+    system = bool(data.get("system"))
+    exchange = not system
+    if not token:                       # reuse the token saved by an earlier connect
+        token, exchange = get_user_token(), False
+    if not token or len(token) < 20:
+        return jsonify({"error": "paste an access token first"}), 400
     try:
-        system = bool(data.get("system"))
-        ok, title, lines = _connect_with_token(
-            token, group,
-            "No pages came back. Check the pages are assigned to the system user in Business Settings." if system
-            else "No pages came back. In Graph API Explorer, regenerate the token and tick the pages in the dialog.",
-            exchange=not system)
+        if data.get("preview"):
+            pages, err = _preview_pages(token)
+            if not pages:
+                return jsonify({"error": err or "No pages came back for this token."}), 400
+            return jsonify({"pages": pages})
+        only = data.get("only")
+        if not isinstance(only, list) or not only:
+            return jsonify({"error": "choose at least one page to add"}), 400
+        ok, title, lines = _connect_with_token(token, group, [str(i) for i in only], exchange=exchange)
         return jsonify({"ok": ok, "title": title, "lines": lines}), (200 if ok else 400)
     except Exception as e:
         print(f"[connect-token] {type(e).__name__}")
