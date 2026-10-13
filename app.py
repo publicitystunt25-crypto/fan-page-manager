@@ -302,7 +302,7 @@ def make_quote_card(quote_text):
     draw.rectangle([(W // 2 - 60, y_start + 20), (W // 2 + 60, y_start + 24)], fill=(255, 255, 255))
 
     # Handle on card
-    handle = "TheRealMiaSnow"
+    handle = ".....TheRealMiaSnow"
     hbbox = draw.textbbox((0, 0), handle, font=small_font)
     hw = hbbox[2] - hbbox[0]
     draw.text(((W - hw) // 2, y_start + 50), handle, font=small_font, fill=(220, 180, 255))
@@ -329,7 +329,7 @@ def post_quote():
     if not quote:
         return jsonify({"error": "quote required"}), 400
 
-    caption = data.get("caption") or f"{quote}\n\n- TheRealMiaSnow"
+    caption = data.get("caption") or f"{quote}\n\n.....TheRealMiaSnow"
 
     try:
         filename = make_quote_card(quote)
