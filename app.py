@@ -15,7 +15,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 USER_ACCESS_TOKEN = os.environ.get("FB_USER_TOKEN")
 GRAPH = "https://graph.facebook.com/v19.0"
 
-# ── DB ────────────────────────────────────────────────────────────────────────
+# â”€â”€ DB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def get_conn():
     return psycopg2.connect(DATABASE_URL, connect_timeout=10,
@@ -67,7 +67,7 @@ def init_db():
     cur.close()
     conn.close()
 
-# ── INSTAGRAM HELPERS ─────────────────────────────────────────────────────────
+# â”€â”€ INSTAGRAM HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def get_ig_for_page(page_access_token, fb_page_id):
     r = requests.get(f"{GRAPH}/{fb_page_id}",
@@ -89,6 +89,21 @@ def post_to_ig(ig_account_id, page_token, media_url, caption, media_type="IMAGE"
     creation_id = result.get("id")
     if not creation_id:
         return None, result.get("error", {}).get("message", str(result))
+
+    # IG processes the container asynchronously; publishing early gives "Media ID is not available"
+    deadline = time.time() + (180 if media_type == "VIDEO" else 45)
+    while time.time() < deadline:
+        s = requests.get(f"{GRAPH}/{creation_id}",
+                         params={"fields": "status_code", "access_token": page_token},
+                         timeout=15).json()
+        status = s.get("status_code")
+        if status == "FINISHED":
+            break
+        if status in ("ERROR", "EXPIRED"):
+            return None, f"media processing {status}"
+        time.sleep(3)
+    else:
+        return None, "media processing timed out"
 
     pub = requests.post(f"{GRAPH}/{ig_account_id}/media_publish",
                         data={"creation_id": creation_id, "access_token": page_token},
@@ -115,7 +130,7 @@ def upload_to_imgbb(image_path):
     return result.get("data", {}).get("url")
 
 def _post_to_all_pages(media_url, caption, media_type="IMAGE"):
-    """Background thread — posts to all active fan pages with staggered delays."""
+    """Background thread â€” posts to all active fan pages with staggered delays."""
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -139,7 +154,7 @@ def _post_to_all_pages(media_url, caption, media_type="IMAGE"):
             if err:
                 print(f"[post] {page['page_name']} error: {err}")
             else:
-                print(f"[post] {page['page_name']} → {post_id}")
+                print(f"[post] {page['page_name']} â†’ {post_id}")
             time.sleep(3)
     except Exception as e:
         print(f"[post-all] {e}")
@@ -223,7 +238,7 @@ def _analytics_loop():
             print(f"[analytics-loop] {e}")
         time.sleep(3600)
 
-# ── ROUTES ────────────────────────────────────────────────────────────────────
+# â”€â”€ ROUTES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.route("/")
 def index():
@@ -231,7 +246,7 @@ def index():
 
 @app.route("/list-pages", methods=["GET"])
 def list_available_pages():
-    """Show all FB pages on your account without adding them to DB — use to pick which ones to sync."""
+    """Show all FB pages on your account without adding them to DB â€” use to pick which ones to sync."""
     try:
         r = requests.get(f"{GRAPH}/me/accounts",
                          params={"fields": "id,name,instagram_business_account",
@@ -400,6 +415,179 @@ def post_quote():
     threading.Thread(target=_post_to_all_pages,
                      args=(media_url, caption, "IMAGE"), daemon=True).start()
     return jsonify({"status": "posting", "media_url": media_url, "caption": caption})
+
+# â”€â”€ CLIPS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+CLIP_DIR = "/tmp/clips"
+os.makedirs(CLIP_DIR, exist_ok=True)
+
+def _ffmpeg_exe():
+    import imageio_ffmpeg
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+def download_clip(url):
+    """Download a Twitch/Kick clip. Returns (path, info dict)."""
+    import yt_dlp
+    out = os.path.join(CLIP_DIR, uuid.uuid4().hex)
+    opts = {"outtmpl": out + ".%(ext)s", "format": "best[ext=mp4]/best",
+            "quiet": True, "noprogress": True, "noplaylist": True, "ffmpeg_location": _ffmpeg_exe()}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        path = ydl.prepare_filename(info)
+    return path, info
+
+BAR_H = 110
+
+def _bold_font(size):
+    for fp in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+               "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+               "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+               "C:/Windows/Fonts/arialbd.ttf"]:
+        if os.path.exists(fp):
+            return ImageFont.truetype(fp, size)
+    return ImageFont.load_default()
+
+def make_brand_bar(slug, platform):
+    """1080xBAR_H black bar: platform wordmark on the left, PLATFORM.COM/CHANNEL on the right."""
+    W = 1080
+    bar = Image.new("RGB", (W, BAR_H), (0, 0, 0))
+    d = ImageDraw.Draw(bar)
+    if platform == "kick":
+        word, color, domain = "KICK", (83, 252, 24), "KICK.COM"
+    else:
+        word, color, domain = "TWITCH", (145, 70, 255), "TWITCH.TV"
+    logo_font = _bold_font(78)
+    d.text((24, (BAR_H - 78) // 2 - 8), word, font=logo_font, fill=color)
+    text = f"{domain}/{slug}".upper()
+    size = 46
+    while size > 22:
+        f = _bold_font(size)
+        tw = d.textbbox((0, 0), text, font=f)[2]
+        if tw <= W - 48 - 260:
+            break
+        size -= 2
+    tw = d.textbbox((0, 0), text, font=f)[2]
+    d.text((W - 24 - tw, (BAR_H - size) // 2 - 4), text, font=f, fill=(255, 255, 255))
+    path = os.path.join(CLIP_DIR, f"{uuid.uuid4().hex}_bar.png")
+    bar.save(path)
+    return path
+
+def detect_crop(src_path):
+    """Find the real picture area (strips pillarbox/letterbox bars). Returns 'W:H:X:Y' or None."""
+    import re, subprocess
+    r = subprocess.run([_ffmpeg_exe(), "-ss", "1", "-t", "4", "-i", src_path,
+                        "-vf", "cropdetect=24:2:0", "-an", "-f", "null", "-"],
+                       capture_output=True, text=True, timeout=120)
+    best = None
+    for w, h, x, y in re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", r.stderr):
+        w, h = int(w), int(h)
+        if w >= 64 and h >= 64 and (best is None or w * h > best[0] * best[1]):
+            best = (w, h, int(x), int(y))
+    return f"{best[0]}:{best[1]}:{best[2]}:{best[3]}" if best else None
+
+def render_clip(src_path, slug, platform):
+    """1080x1920 output with a branded bar. Portrait picture fills the frame (bar overlaid at the
+    bottom); landscape picture is centered over a blurred copy with the bar attached underneath."""
+    bar = make_brand_bar(slug, platform)
+    filename = f"{uuid.uuid4().hex}.mp4"
+    dst = os.path.join(CLIP_DIR, filename)
+    crop = detect_crop(src_path)
+    pre = f"crop={crop}," if crop else ""
+    portrait = False
+    if crop:
+        cw, ch = (int(v) for v in crop.split(":")[:2])
+        portrait = ch / cw > 1.2
+    if portrait:
+        fc = (f"[0:v]{pre}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[base];"
+              f"[base][1:v]overlay=0:H-{BAR_H}[v]")
+    else:
+        fc = (f"[0:v]{pre}split[a][b];"
+              "[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=30:5[bg];"
+              f"[b]scale=1080:-2,pad=1080:ih+{BAR_H}:0:0:black[blk0];"
+              f"[blk0][1:v]overlay=0:H-{BAR_H}[blk];"
+              "[bg][blk]overlay=(W-w)/2:(H-h)/2[v]")
+    cmd = [_ffmpeg_exe(), "-y", "-i", src_path, "-i", bar, "-filter_complex", fc,
+           "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast",
+           "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+           "-movflags", "+faststart", "-t", "90", dst]
+    import subprocess
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    os.remove(bar)
+    if r.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {r.stderr[-400:]}")
+    return filename
+
+def channel_slug_from(url, info, override):
+    """Channel handle for the bar: override > url path > extractor metadata."""
+    if override:
+        return override.strip().lstrip("@").replace(" ", "")
+    import re
+    m = re.search(r"(?:twitch\.tv|kick\.com)/([^/?#]+)", url)
+    if m and m.group(1).lower() not in ("clip", "clips", "video", "videos"):
+        return m.group(1)
+    return (info.get("uploader_id") or info.get("uploader") or "streamer").replace(" ", "")
+
+def generate_clip_caption(title, channel_name, platform, handle_tag, hint=""):
+    """AI-written caption; falls back to a plain template."""
+    fallback = f"{title}\n\n{channel_name} on {platform.capitalize()} ðŸ”¥\n\n{handle_tag}"
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        return fallback
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=key)
+        msg = client.messages.create(
+            model="claude-haiku-5-5", max_tokens=300,
+            messages=[{"role": "user", "content":
+                f"Write an Instagram Reels caption for a {platform} clip of streamer {channel_name}. "
+                f"Clip title: {title}. {('Extra context: ' + hint) if hint else ''}\n"
+                "One punchy hook line, optionally one short follow-up line, then 4-6 relevant hashtags. "
+                "No quotes around it, no @mentions. Output only the caption."}])
+        text = msg.content[0].text.strip()
+        return f"{text}\n\n{handle_tag}"
+    except Exception as e:
+        print(f"[caption] {e}")
+        return fallback
+
+def _process_and_post_clip(url, channel_override, hint, caption_override):
+    try:
+        src, info = download_clip(url)
+        platform = "kick" if "kick.com" in url else "twitch"
+        slug = channel_slug_from(url, info, channel_override)
+        channel = channel_override or slug
+        title = info.get("title") or "Clip"
+        handle_tag = f"{channel} on {platform.capitalize()}"
+        filename = render_clip(src, slug, platform)
+        os.remove(src)
+        caption = caption_override or generate_clip_caption(title, channel, platform, handle_tag, hint)
+        base_url = os.environ.get("BASE_URL", "https://fan-page-manager.onrender.com")
+        media_url = f"{base_url}/clip-video/{filename}"
+        print(f"[clip] {channel} â†’ {media_url}")
+        _post_to_all_pages(media_url, caption, "VIDEO")
+    except Exception as e:
+        print(f"[clip] failed: {e}")
+
+@app.route("/clip-video/<filename>")
+def serve_clip_video(filename):
+    path = os.path.join(CLIP_DIR, os.path.basename(filename))
+    if not os.path.exists(path):
+        return "not found", 404
+    return send_file(path, mimetype="video/mp4")
+
+@app.route("/post-clip", methods=["POST"])
+def post_clip():
+    """Take a Twitch/Kick clip URL, brand it, caption it and post as a Reel to all active pages.
+    Body: { "url": "...", "channel": "optional name override", "hint": "optional caption context",
+            "caption": "optional full caption override" }
+    """
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    if not url or not any(h in url for h in ("twitch.tv", "kick.com")):
+        return jsonify({"error": "a twitch.tv or kick.com clip url is required"}), 400
+    threading.Thread(target=_process_and_post_clip,
+                     args=(url, data.get("channel"), data.get("hint", ""), data.get("caption")),
+                     daemon=True).start()
+    return jsonify({"status": "processing", "url": url})
 
 @app.route("/post", methods=["POST"])
 def post_content():
@@ -654,7 +842,7 @@ def migrate():
     init_db()
     return jsonify({"status": "ok"})
 
-# ── STARTUP ───────────────────────────────────────────────────────────────────
+# â”€â”€ STARTUP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 init_db()
 threading.Thread(target=_analytics_loop, daemon=True).start()

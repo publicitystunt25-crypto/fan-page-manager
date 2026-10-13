@@ -4,3 +4,6 @@ psycopg2-binary
 requests
 python-dotenv
 Pillow
+yt-dlp
+imageio-ffmpeg
+anthropic
