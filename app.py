@@ -168,10 +168,32 @@ def _analytics_loop():
 def index():
     return jsonify({"status": "fan-page-manager running"})
 
+@app.route("/list-pages", methods=["GET"])
+def list_available_pages():
+    """Show all FB pages on your account without adding them to DB — use to pick which ones to sync."""
+    try:
+        r = requests.get(f"{GRAPH}/me/accounts",
+                         params={"fields": "id,name,instagram_business_account",
+                                 "access_token": USER_ACCESS_TOKEN, "limit": 100},
+                         timeout=15)
+        pages = r.json().get("data", [])
+        result = [{"fb_page_id": p["id"], "name": p.get("name"),
+                   "ig_account_id": p.get("instagram_business_account", {}).get("id")}
+                  for p in pages]
+        return jsonify({"available": result, "total": len(result)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/sync-pages", methods=["POST", "GET"])
 def sync_pages():
-    """Pull all FB pages, find linked IG accounts, save to DB."""
+    """Pull FB pages and save to DB.
+    Optional body: { "page_ids": ["123", "456"] } to only add specific pages.
+    Without page_ids, adds all pages on your account.
+    """
     try:
+        data = request.json or {}
+        allowed_ids = data.get("page_ids")  # optional filter
+
         r = requests.get(f"{GRAPH}/me/accounts",
                          params={"fields": "id,name,access_token,instagram_business_account",
                                  "access_token": USER_ACCESS_TOKEN, "limit": 100},
@@ -180,7 +202,10 @@ def sync_pages():
         if not pages:
             return jsonify({"error": "no pages returned", "raw": r.json()}), 400
 
-        added, updated = 0, 0
+        if allowed_ids:
+            pages = [p for p in pages if p["id"] in allowed_ids]
+
+        added, updated, skipped = 0, 0, 0
         for page in pages:
             fb_page_id = page["id"]
             page_name = page.get("name", "")
@@ -189,6 +214,10 @@ def sync_pages():
 
             if not ig_id:
                 ig_id = get_ig_for_page(page_token, fb_page_id)
+
+            if not ig_id:
+                skipped += 1
+                continue
 
             conn = get_conn()
             cur = conn.cursor()
@@ -210,7 +239,7 @@ def sync_pages():
             cur.close()
             conn.close()
 
-        return jsonify({"synced": len(pages), "added": added, "updated": updated})
+        return jsonify({"added": added, "updated": updated, "skipped_no_ig": skipped})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
