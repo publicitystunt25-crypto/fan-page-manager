@@ -1,10 +1,13 @@
 import os
 import time
 import threading
+import uuid
+import textwrap
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from psycopg2.extras import RealDictCursor
 import psycopg2
+from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 
@@ -242,6 +245,97 @@ def sync_pages():
         return jsonify({"added": added, "updated": updated, "skipped_no_ig": skipped})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+QUOTE_IMG_DIR = "/tmp/quote_images"
+os.makedirs(QUOTE_IMG_DIR, exist_ok=True)
+
+def make_quote_card(quote_text):
+    """Generate a 1080x1080 purple gradient quote card, return file path."""
+    W, H = 1080, 1080
+    img = Image.new("RGB", (W, H))
+    draw = ImageDraw.Draw(img)
+
+    # Purple gradient background
+    for y in range(H):
+        ratio = y / H
+        r = int(60 + ratio * 20)
+        g = int(0 + ratio * 10)
+        b = int(120 + ratio * 60)
+        draw.line([(0, y), (W, y)], fill=(r, g, b))
+
+    # Decorative accent line
+    draw.rectangle([80, 80, 90, H - 80], fill=(255, 255, 255, 120))
+
+    # Font
+    font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+    ]
+    font = None
+    small_font = None
+    for fp in font_paths:
+        if os.path.exists(fp):
+            font = ImageFont.truetype(fp, 72)
+            small_font = ImageFont.truetype(fp, 42)
+            break
+    if not font:
+        font = ImageFont.load_default()
+        small_font = font
+
+    # Wrap quote text
+    lines = textwrap.wrap(quote_text, width=22)
+    total_h = len(lines) * 90
+    y_start = (H - total_h) // 2 - 40
+
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        tw = bbox[2] - bbox[0]
+        x = (W - tw) // 2
+        # Shadow
+        draw.text((x + 3, y_start + 3), line, font=font, fill=(0, 0, 0, 100))
+        draw.text((x, y_start), line, font=font, fill=(255, 255, 255))
+        y_start += 90
+
+    # Decorative divider
+    draw.rectangle([(W // 2 - 60, y_start + 20), (W // 2 + 60, y_start + 24)], fill=(255, 255, 255))
+
+    filename = f"{uuid.uuid4().hex}.jpg"
+    path = os.path.join(QUOTE_IMG_DIR, filename)
+    img.save(path, "JPEG", quality=95)
+    return filename
+
+@app.route("/quote-image/<filename>")
+def serve_quote_image(filename):
+    path = os.path.join(QUOTE_IMG_DIR, filename)
+    if not os.path.exists(path):
+        return "not found", 404
+    return send_file(path, mimetype="image/jpeg")
+
+@app.route("/post-quote", methods=["POST"])
+def post_quote():
+    """Generate a quote card and post to all active fan pages.
+    Body: { "quote": "your quote text", "caption": "optional caption override" }
+    """
+    data = request.get_json(silent=True) or {}
+    quote = data.get("quote", "").strip()
+    if not quote:
+        return jsonify({"error": "quote required"}), 400
+
+    caption = data.get("caption") or f"{quote}\n\n@therealmiasnow"
+
+    try:
+        filename = make_quote_card(quote)
+    except Exception as e:
+        return jsonify({"error": f"image generation failed: {e}"}), 500
+
+    base_url = os.environ.get("BASE_URL", "https://fan-page-manager.onrender.com")
+    media_url = f"{base_url}/quote-image/{filename}"
+
+    threading.Thread(target=_post_to_all_pages,
+                     args=(media_url, caption, "IMAGE"), daemon=True).start()
+    return jsonify({"status": "posting", "media_url": media_url, "caption": caption})
 
 @app.route("/post", methods=["POST"])
 def post_content():
