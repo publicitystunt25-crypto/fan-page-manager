@@ -43,6 +43,14 @@ def init_db():
             posted_at TIMESTAMPTZ DEFAULT NOW(),
             error TEXT
         );
+        CREATE TABLE IF NOT EXISTS quote_queue (
+            id SERIAL PRIMARY KEY,
+            quote TEXT NOT NULL,
+            caption TEXT,
+            scheduled_at TIMESTAMPTZ NOT NULL,
+            status TEXT DEFAULT 'pending',
+            posted_at TIMESTAMPTZ
+        );
         CREATE TABLE IF NOT EXISTS analytics_snapshots (
             id SERIAL PRIMARY KEY,
             fan_page_id INTEGER REFERENCES fan_pages(id),
@@ -121,6 +129,38 @@ def _post_to_all_pages(media_url, caption, media_type="IMAGE"):
             time.sleep(3)
     except Exception as e:
         print(f"[post-all] {e}")
+
+def _quote_scheduler_loop():
+    time.sleep(10)
+    while True:
+        try:
+            conn = get_conn()
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("""
+                SELECT id, quote, caption FROM quote_queue
+                WHERE status = 'pending' AND scheduled_at <= NOW()
+                ORDER BY scheduled_at ASC LIMIT 1
+            """)
+            job = cur.fetchone()
+            cur.close()
+            conn.close()
+
+            if job:
+                filename = make_quote_card(job["quote"])
+                base_url = os.environ.get("BASE_URL", "https://fan-page-manager.onrender.com")
+                media_url = f"{base_url}/quote-image/{filename}"
+                _post_to_all_pages(media_url, job["caption"], "IMAGE")
+
+                conn2 = get_conn()
+                cur2 = conn2.cursor()
+                cur2.execute("UPDATE quote_queue SET status='done', posted_at=NOW() WHERE id=%s", (job["id"],))
+                conn2.commit()
+                cur2.close()
+                conn2.close()
+                print(f"[quote-scheduler] posted quote id {job['id']}")
+        except Exception as e:
+            print(f"[quote-scheduler] {e}")
+        time.sleep(30)
 
 def _analytics_loop():
     time.sleep(30)
@@ -506,6 +546,76 @@ def analytics_today():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/schedule-quotes", methods=["POST"])
+def schedule_quotes():
+    """Schedule a list of quotes.
+    Body: { "quotes": ["q1","q2",...], "first_delay_minutes": 0, "interval_hours": 4 }
+    First quote posts after first_delay_minutes, then every interval_hours after that.
+    """
+    data = request.get_json(silent=True) or {}
+    quotes = data.get("quotes", [])
+    first_delay = int(data.get("first_delay_minutes", 0))
+    interval_hours = float(data.get("interval_hours", 4))
+
+    if not quotes:
+        return jsonify({"error": "quotes list required"}), 400
+
+    import datetime as _dt
+    now = _dt.datetime.utcnow()
+    scheduled = []
+
+    for i, quote in enumerate(quotes):
+        if i == 0:
+            due = now + _dt.timedelta(minutes=first_delay)
+        else:
+            due = now + _dt.timedelta(minutes=first_delay) + _dt.timedelta(hours=interval_hours * i)
+
+        caption = f"{quote}\n\n.....TheRealMiaSnow"
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO quote_queue (quote, caption, scheduled_at) VALUES (%s, %s, %s) RETURNING id",
+                    (quote, caption, due))
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        scheduled.append({"id": row[0], "quote": quote[:40], "scheduled_at": due.isoformat()})
+
+    return jsonify({"scheduled": len(scheduled), "quotes": scheduled})
+
+@app.route("/delete-post", methods=["POST"])
+def delete_post():
+    """Delete an IG post from a specific fan page.
+    Body: { "ig_post_id": "123456", "fan_page_id": 1 }
+    """
+    data = request.get_json(silent=True) or {}
+    ig_post_id = data.get("ig_post_id")
+    fan_page_id = data.get("fan_page_id")
+
+    if not ig_post_id or not fan_page_id:
+        return jsonify({"error": "ig_post_id and fan_page_id required"}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT page_access_token FROM fan_pages WHERE id=%s", (fan_page_id,))
+        page = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not page:
+            return jsonify({"error": "page not found"}), 404
+
+        r = requests.delete(f"{GRAPH}/{ig_post_id}",
+                            params={"access_token": page["page_access_token"]},
+                            timeout=10)
+        result = r.json()
+        if result.get("success"):
+            return jsonify({"status": "deleted", "ig_post_id": ig_post_id})
+        return jsonify({"error": result.get("error", {}).get("message", str(result))}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/migrate", methods=["GET"])
 def migrate():
     init_db()
@@ -515,6 +625,7 @@ def migrate():
 
 init_db()
 threading.Thread(target=_analytics_loop, daemon=True).start()
+threading.Thread(target=_quote_scheduler_loop, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
