@@ -191,7 +191,7 @@ def sync_pages():
     Without page_ids, adds all pages on your account.
     """
     try:
-        data = request.json or {}
+        data = (request.get_json(silent=True) or {}) if request.method == "POST" else {}
         allowed_ids = data.get("page_ids")  # optional filter
 
         r = requests.get(f"{GRAPH}/me/accounts",
