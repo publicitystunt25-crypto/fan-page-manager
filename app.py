@@ -91,6 +91,7 @@ def init_db():
             prev_likes INTEGER,
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
+        ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS reposts INTEGER DEFAULT 0;
         CREATE TABLE IF NOT EXISTS analytics_snapshots (
             id SERIAL PRIMARY KEY,
             fan_page_id INTEGER REFERENCES fan_pages(id),
@@ -246,13 +247,14 @@ def _quote_scheduler_loop():
         time.sleep(30)
 
 _pull_lock = threading.Lock()
+REPOSTS_STATE = {"state": "untested"}   # untested / supported / rejected
 # metric sets to try, richest first (availability differs by media type and account)
-INSIGHT_SETS = ("views,reach,saved,shares,total_interactions", "views,reach,saved", "reach,saved,shares", "reach,saved")
+INSIGHT_SETS = ("views,reach,saved,shares,reposts,total_interactions", "views,reach,saved,shares,total_interactions", "views,reach,saved", "reach,saved,shares", "reach,saved")
 
 def _media_insights(media_id, token):
     """Latest insights for one post -> (dict, error message)."""
     err = ""
-    for metrics in INSIGHT_SETS:
+    for idx, metrics in enumerate(INSIGHT_SETS):
         try:
             r = requests.get(f"{GRAPH}/{media_id}/insights",
                              params={"metric": metrics, "access_token": token}, timeout=20).json()
@@ -265,6 +267,7 @@ def _media_insights(media_id, token):
                 v = vals[0].get("value", (item.get("total_value") or {}).get("value"))
                 if isinstance(v, (int, float)):
                     out[item["name"]] = int(v)
+            out["__set"] = idx          # 0 = the reposts request was accepted
             return out, ""
         err = (r.get("error") or {}).get("message", "")[:200]
     return {}, err
@@ -281,22 +284,28 @@ def _pull_page_metrics(page):
     cur = conn.cursor()
     for post in r["data"]:
         ins, err = _media_insights(post["id"], page["page_access_token"])
+        if "__set" in ins:
+            if ins.pop("__set") == 0:
+                REPOSTS_STATE["state"] = "supported"
+            elif REPOSTS_STATE["state"] != "supported":
+                REPOSTS_STATE["state"] = "rejected"
         last_err = err or last_err
         got_any = got_any or bool(ins)
         cur.execute("""
             INSERT INTO post_metrics (ig_media_id, fan_page_id, permalink, media_type, caption, posted_at,
-                                      views, reach, likes, comments, saves, shares)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                      views, reach, likes, comments, saves, shares, reposts)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (ig_media_id) DO UPDATE SET
                 prev_views = post_metrics.views, prev_likes = post_metrics.likes,
                 permalink = EXCLUDED.permalink, caption = EXCLUDED.caption,
                 views = EXCLUDED.views, reach = EXCLUDED.reach, likes = EXCLUDED.likes,
-                comments = EXCLUDED.comments, saves = EXCLUDED.saves, shares = EXCLUDED.shares,
+                comments = EXCLUDED.comments, saves = EXCLUDED.saves, shares = EXCLUDED.shares, reposts = EXCLUDED.reposts,
                 updated_at = NOW()""",
             (post["id"], page["id"], post.get("permalink"),
              post.get("media_product_type") or post.get("media_type"), (post.get("caption") or "")[:300],
              post.get("timestamp"), ins.get("views", 0), ins.get("reach", 0),
-             post.get("like_count", 0), post.get("comments_count", 0), ins.get("saved", 0), ins.get("shares", 0)))
+             post.get("like_count", 0), post.get("comments_count", 0), ins.get("saved", 0), ins.get("shares", 0),
+             ins.get("reposts", 0)))
         time.sleep(0.2)
     conn.commit()
     cur.close()
@@ -943,14 +952,14 @@ def analytics():
         cur.execute("""
             SELECT fp.page_name, COUNT(*) AS posts_tracked,
                    SUM(m.views) AS views, SUM(m.reach) AS reach, SUM(m.likes) AS likes,
-                   SUM(m.comments) AS comments, SUM(m.saves) AS saves, SUM(m.shares) AS shares
+                   SUM(m.comments) AS comments, SUM(m.saves) AS saves, SUM(m.shares) AS shares, SUM(m.reposts) AS reposts
             FROM post_metrics m JOIN fan_pages fp ON fp.id = m.fan_page_id
             WHERE m.posted_at >= NOW() - INTERVAL '7 days'
             GROUP BY fp.page_name ORDER BY views DESC NULLS LAST""")
         rows = cur.fetchall()
         cur.execute("""
             SELECT COUNT(*) AS posts, SUM(views) AS views, SUM(reach) AS reach, SUM(likes) AS likes,
-                   SUM(comments) AS comments, SUM(saves) AS saves, SUM(shares) AS shares
+                   SUM(comments) AS comments, SUM(saves) AS saves, SUM(shares) AS shares, SUM(reposts) AS reposts
             FROM post_metrics WHERE posted_at >= NOW() - INTERVAL '7 days'""")
         totals = cur.fetchone()
         cur.close()
@@ -974,7 +983,7 @@ def analytics_status():
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        return jsonify({"pages": rows})
+        return jsonify({"pages": rows, "reposts_metric": REPOSTS_STATE["state"]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2008,7 +2017,7 @@ td a{color:var(--accent)}.up{color:var(--good)}.empty{padding:24px;color:var(--m
 <div class="pages" id="pages"></div>
 <div class="wrap"><table><thead id="head"></thead><tbody id="body"></tbody></table></div>
 <script>
-const COLS=[['page','Page'],['posted','Posted'],['caption','Caption'],['views','Views',1],['reach','Reach',1],['likes','Likes',1],['comments','Comments',1],['saves','Saves',1],['shares','Shares',1],['views_delta','+Views',1]];
+const COLS=[['page','Page'],['posted','Posted'],['caption','Caption'],['views','Views',1],['reach','Reach',1],['likes','Likes',1],['comments','Comments',1],['saves','Saves',1],['shares','Shares',1],['reposts','Reposts',1],['views_delta','+Views',1]];
 let rows=[],pages=[],sortKey='ts',asc=false;
 const $=id=>document.getElementById(id);
 const fmt=n=>(n==null?0:n).toLocaleString();
@@ -2022,7 +2031,7 @@ function filtered(){const pg=$('fpage').value,gr=$('fgroup').value,q=$('fq').val
  return rows.filter(r=>(!pg||r.page===pg)&&(!gr||r.group===gr)&&(!q||(r.caption||'').toLowerCase().includes(q)))}
 function render(){const f=filtered();const sum=k=>f.reduce((a,r)=>a+(r[k]||0),0);
  $('sub').textContent=f.length+' posts - '+pages.length+' pages';
- $('cards').replaceChildren(...[['Posts',f.length],['Views',sum('views')],['Reach',sum('reach')],['Likes',sum('likes')],['Comments',sum('comments')],['Saves',sum('saves')],['Shares',sum('shares')]].map(([l,v])=>{const c=el('div','card');c.append(el('b',0,fmt(v)),el('span',0,l));return c}));
+ $('cards').replaceChildren(...[['Posts',f.length],['Views',sum('views')],['Reach',sum('reach')],['Likes',sum('likes')],['Comments',sum('comments')],['Saves',sum('saves')],['Shares',sum('shares')],['Reposts',sum('reposts')]].map(([l,v])=>{const c=el('div','card');c.append(el('b',0,fmt(v)),el('span',0,l));return c}));
  $('pages').replaceChildren(...pages.map(p=>{const d=el('div','pg'+(p.analytics_error?' err':''));d.append(el('b',0,p.page_name),el('small',0,(p.page_group||'')+(p.active?'':' (paused)')+' - pulled '+(p.pulled||'never')));
   if(p.analytics_error)d.append(el('small','e',p.analytics_error));return d}));
  $('head').replaceChildren((()=>{const tr=el('tr');for(const [k,l,n] of COLS){const th=el('th',n?'n':'',l+(sortKey===k?(asc?' ▲':' ▼'):''));th.onclick=()=>{if(sortKey===k)asc=!asc;else{sortKey=k;asc=false}render()};tr.append(th)}return tr})());
@@ -2033,7 +2042,7 @@ function render(){const f=filtered();const sum=k=>f.reduce((a,r)=>a+(r[k]||0),0)
  for(const r of f){const tr=el('tr');
   tr.append(el('td',0,r.page),el('td',0,r.posted||''));
   const c=el('td','cap');if(r.permalink){const a=el('a',0,(r.caption||'(no caption)').slice(0,90));a.href=r.permalink;a.target='_blank';a.rel='noopener noreferrer';c.append(a)}else c.textContent=(r.caption||'').slice(0,90);tr.append(c);
-  for(const k of ['views','reach','likes','comments','saves','shares'])tr.append(el('td','n',fmt(r[k])));
+  for(const k of ['views','reach','likes','comments','saves','shares','reposts'])tr.append(el('td','n',fmt(r[k])));
   tr.append(el('td','n'+(r.views_delta>0?' up':''),r.views_delta>0?'+'+fmt(r.views_delta):'-'));body.append(tr)}}
 for(const id of ['fpage','fgroup'])$(id).onchange=render;$('fq').oninput=render;
 $('refresh').onclick=async()=>{$('refresh').disabled=true;await api('/dashboard/refresh',{method:'POST'});$('sub').textContent='Refreshing - reload in a minute...';setTimeout(()=>{$('refresh').disabled=false},4000)};
@@ -2056,7 +2065,7 @@ def dashboard_data():
             SELECT p.page_name AS page, p.page_group AS "group", m.permalink, m.media_type, m.caption,
                    to_char(m.posted_at AT TIME ZONE 'America/New_York', 'Mon DD, HH12:MI AM') AS posted,
                    EXTRACT(EPOCH FROM m.posted_at)::bigint AS ts,
-                   m.views, m.reach, m.likes, m.comments, m.saves, m.shares,
+                   m.views, m.reach, m.likes, m.comments, m.saves, m.shares, m.reposts,
                    m.views - COALESCE(m.prev_views, m.views) AS views_delta
             FROM post_metrics m JOIN fan_pages p ON p.id = m.fan_page_id
             ORDER BY m.posted_at DESC NULLS LAST LIMIT 3000""")
