@@ -2150,6 +2150,63 @@ def _delete_old_worker(job):
     except Exception as e:
         print(f"[delete-old] could not store result: {type(e).__name__}")
 
+def _wipe_worker(job):
+    """Deletes EVERY post on the named pages that is older than job["wipe"]["before"], bot posts included.
+    Used when the owner repurposes a page. Posts made after the cutoff are never touched.
+    job["wipe"] = {"page_ids": [..], "before": "2026-10-14T23:50:00+0000"}"""
+    from datetime import datetime, timezone
+    spec = job["wipe"]
+    summary = {}
+    try:
+        cutoff = datetime.strptime(spec["before"], "%Y-%m-%dT%H:%M:%S%z")
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, page_name, ig_account_id, page_access_token, auth_type FROM fan_pages WHERE id = ANY(%s)",
+                    ([int(p) for p in spec["page_ids"]],))
+        pages = cur.fetchall()
+        cur.close()
+        conn.close()
+        deleted_ids, failed, per_page = [], [], {}
+        for page in pages:
+            g = _graph_for(page.get("auth_type"))
+            url = f"{g}/{page['ig_account_id']}/media"
+            params = {"fields": "id,timestamp", "limit": 50, "access_token": page["page_access_token"]}
+            todo, guard = [], 0
+            while url and guard < 30:
+                r = requests.get(url, params=params, timeout=30).json()
+                guard += 1
+                for m in r.get("data", []):
+                    ts = datetime.strptime(m["timestamp"], "%Y-%m-%dT%H:%M:%S%z") if m.get("timestamp") else None
+                    if ts and ts < cutoff:
+                        todo.append(m["id"])
+                url, params = (r.get("paging") or {}).get("next"), None
+            n_ok = 0
+            for mid in todo:
+                d = requests.delete(f"{g}/{mid}", params={"access_token": page["page_access_token"]}, timeout=30).json()
+                if d.get("success"):
+                    n_ok += 1
+                    deleted_ids.append(mid)
+                else:
+                    failed.append(f"{mid}: {(d.get('error') or {}).get('message', str(d))[:80]}")
+                time.sleep(random.uniform(3, 6))
+            per_page[page["page_name"]] = {"found": len(todo), "deleted": n_ok}
+        if deleted_ids:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM post_metrics WHERE ig_media_id = ANY(%s)", (deleted_ids,))
+            conn.commit()
+            cur.close()
+            conn.close()
+        summary = {"deleted": len(deleted_ids), "per_page": per_page, "failed": failed[:10], "failed_count": len(failed)}
+    except Exception as e:
+        summary = {"failed": type(e).__name__}
+    text = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+    print(f"[wipe] {job['id']}: {text[:300]}")
+    try:
+        _set_setting(f"job_{job['id']}_result", text)
+    except Exception as e:
+        print(f"[wipe] could not store result: {type(e).__name__}")
+
 def _run_jobs_once():
     """Claim every job in jobs.json that has never started (the INSERT only succeeds once per id)."""
     try:
@@ -2165,6 +2222,12 @@ def _run_jobs_once():
         conn = get_conn()
         cur = conn.cursor()
         for job in jobs:
+            if isinstance(job.get("wipe"), dict) and isinstance(job.get("id"), str):
+                cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
+                               ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
+                if cur.fetchone():
+                    threading.Thread(target=_wipe_worker, args=(job,), daemon=True).start()
+                continue
             if isinstance(job.get("delete_old"), dict) and isinstance(job.get("id"), str):
                 cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
                                ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
