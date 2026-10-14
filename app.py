@@ -1390,7 +1390,7 @@ def connect_start():
         "state": _sign_state(group), "scope": FB_SCOPES, "response_type": "code"})
     return jsonify({"url": url})
 
-PAGE_FIELDS = "id,name,access_token,instagram_business_account{id,username}"
+PAGE_FIELDS = "id,name,access_token,instagram_business_account{id,username},connected_instagram_account{id,username}"
 
 def _fetch_pages(user_token):
     """Pages the token can see: /me/accounts plus pages owned by or shared with the user's Business
@@ -1416,6 +1416,22 @@ def _fetch_pages(user_token):
         print(f"[fetch-pages] business lookup: {type(e).__name__}")
     return list(found.values()), err
 
+def _page_ig(p, user_token):
+    """The Instagram account for a page. Pages linked via Business Settings report it as
+    connected_instagram_account instead of instagram_business_account, so check both, then ask the
+    page directly. Returns {} when none is linked."""
+    ig = p.get("instagram_business_account") or p.get("connected_instagram_account")
+    if ig and ig.get("id"):
+        return ig
+    try:
+        d = requests.get(f"{GRAPH}/{p['id']}",
+                         params={"fields": "instagram_business_account{id,username},connected_instagram_account{id,username}",
+                                 "access_token": p.get("access_token") or user_token}, timeout=20).json()
+        return d.get("instagram_business_account") or d.get("connected_instagram_account") or {}
+    except Exception as e:
+        print(f"[page-ig] {type(e).__name__}")
+        return {}
+
 def _preview_pages(user_token):
     """Nothing is saved: list the pages so the admin can pick which ones to add."""
     pages, err = _fetch_pages(user_token)
@@ -1429,7 +1445,7 @@ def _preview_pages(user_token):
     conn.close()
     out = []
     for p in pages:
-        ig = p.get("instagram_business_account") or {}
+        ig = _page_ig(p, user_token)
         out.append({"id": p["id"], "name": p.get("name", p["id"]), "ig": ig.get("username") or ig.get("id"),
                     "has_ig": bool(ig.get("id")), "group": existing.get(p["id"])})
     return out, err
@@ -1453,7 +1469,7 @@ def _connect_with_token(short_token, group, only, exchange=True):
         if p["id"] not in wanted:
             continue
         name, token = p.get("name", p["id"]), p.get("access_token")
-        ig = (p.get("instagram_business_account") or {})
+        ig = _page_ig(p, user_token)
         if not ig.get("id"):
             lines.append(f"{name}: skipped - no Instagram account linked to this Facebook Page")
             continue
