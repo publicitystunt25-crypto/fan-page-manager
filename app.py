@@ -1390,12 +1390,31 @@ def connect_start():
         "state": _sign_state(group), "scope": FB_SCOPES, "response_type": "code"})
     return jsonify({"url": url})
 
+PAGE_FIELDS = "id,name,access_token,instagram_business_account{id,username}"
+
 def _fetch_pages(user_token):
-    """Pages the token can see: [{id, name, access_token, instagram_business_account{id,username}}]."""
+    """Pages the token can see: /me/accounts plus pages owned by or shared with the user's Business
+    accounts (business pages are not in /me/accounts). Returns (pages, error_message)."""
+    found, err = {}, ""
     r = requests.get(f"{GRAPH}/me/accounts",
-                     params={"fields": "id,name,access_token,instagram_business_account{id,username}",
-                             "access_token": user_token, "limit": 100}, timeout=30).json()
-    return r.get("data", []), r.get("error", {}).get("message", "")
+                     params={"fields": PAGE_FIELDS, "access_token": user_token, "limit": 100}, timeout=30).json()
+    err = r.get("error", {}).get("message", "")
+    for p in r.get("data", []):
+        found[p["id"]] = p
+    try:
+        biz = requests.get(f"{GRAPH}/me/businesses",
+                           params={"fields": "id,name", "access_token": user_token, "limit": 50},
+                           timeout=30).json().get("data", [])
+        for b in biz:
+            for edge in ("owned_pages", "client_pages"):
+                rr = requests.get(f"{GRAPH}/{b['id']}/{edge}",
+                                  params={"fields": PAGE_FIELDS, "access_token": user_token, "limit": 100},
+                                  timeout=30).json()
+                for p in rr.get("data", []):
+                    found.setdefault(p["id"], p)
+    except Exception as e:
+        print(f"[fetch-pages] business lookup: {type(e).__name__}")
+    return list(found.values()), err
 
 def _preview_pages(user_token):
     """Nothing is saved: list the pages so the admin can pick which ones to add."""
@@ -1437,6 +1456,12 @@ def _connect_with_token(short_token, group, only, exchange=True):
         ig = (p.get("instagram_business_account") or {})
         if not ig.get("id"):
             lines.append(f"{name}: skipped - no Instagram account linked to this Facebook Page")
+            continue
+        if not token:   # business-owned pages may not expose a token in the list; ask for it directly
+            token = requests.get(f"{GRAPH}/{p['id']}", params={"fields": "access_token", "access_token": user_token},
+                                 timeout=20).json().get("access_token")
+        if not token:
+            lines.append(f"{name}: skipped - Facebook gave no page token (the token's user needs full control of this page)")
             continue
         conn = get_conn()
         cur = conn.cursor()
