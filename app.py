@@ -1802,74 +1802,10 @@ def data_deletion_page():
             "If you connected a page to this service, you can also remove access at any time in your Facebook settings under Business Integrations (or Apps and Websites) by removing this app. Doing so revokes our access token."]),
     ])
 
-# ── ONE-TIME JOB (approved by the owner; runs once per deploy at most, tracked in app_settings) ──────
-
-ONESHOT_ID = "mia_baddie_20261014"
-ONESHOT_URL = "https://kick.com/therealmiasnow/clips/clip_01KYDXARR9P01K0Y4BNY5JGVYV"
-ONESHOT_FOOTER = "@nathanielonline"
-ONESHOT_VARIANTS = [
-    {"page_ids": [2], "text": "Mia Snow just might be the baddie we've all been looking for"},   # Clip Fire 1
-    {"page_ids": [4], "text": "Everybody been searching for a baddie... Mia Snow might be her"},  # Clip Fire 2
-]
-
-def _set_setting(key, value):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, %s)
-                   ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value""", (key, value))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-def _oneshot_worker():
-    variants = [{**v, "caption": f"{v['text']}\n\n{ONESHOT_FOOTER}"} for v in ONESHOT_VARIANTS]
-    try:
-        results = process_clip(ONESHOT_URL, delay=(30, 90), variants=variants)
-        summary = "; ".join(f"{n}: {'posted ' + str(pid) if not err else 'ERROR ' + str(err)[:120]}"
-                            for n, pid, err in results) or "no pages posted"
-    except Exception as e:
-        summary = f"failed: {type(e).__name__}: {str(e)[:200]}"
-    print(f"[oneshot] {summary}")
-    try:
-        _set_setting(ONESHOT_ID + "_result", summary)
-    except Exception as e:
-        print(f"[oneshot] could not store result: {type(e).__name__}")
-
-def _run_oneshot_once():
-    """The INSERT only succeeds the first time, so the job can never run twice."""
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
-                       ON CONFLICT (key) DO NOTHING RETURNING key""", (ONESHOT_ID,))
-        first = cur.fetchone()
-        conn.commit()
-        cur.close()
-        conn.close()
-        if first:
-            print("[oneshot] starting")
-            threading.Thread(target=_oneshot_worker, daemon=True).start()
-    except Exception as e:
-        print(f"[oneshot] {type(e).__name__}")
-
-@app.route("/oneshot-status", methods=["GET"])
-def oneshot_status():
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT key, value FROM app_settings WHERE key IN (%s, %s)", (ONESHOT_ID, ONESHOT_ID + "_result"))
-        rows = dict(cur.fetchall())
-        cur.close()
-        conn.close()
-        return jsonify({"state": rows.get(ONESHOT_ID), "result": rows.get(ONESHOT_ID + "_result")})
-    except Exception as e:
-        return jsonify({"error": type(e).__name__}), 500
-
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
 init_db()
 _recover_interrupted_clips()
-_run_oneshot_once()
 threading.Thread(target=_analytics_loop, daemon=True).start()
 threading.Thread(target=_clip_queue_loop, daemon=True).start()
 threading.Thread(target=_quote_scheduler_loop, daemon=True).start()
