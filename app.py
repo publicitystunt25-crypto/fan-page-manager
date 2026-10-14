@@ -276,12 +276,13 @@ def _pull_page_metrics(page):
                              "limit": 25, "access_token": page["page_access_token"]}, timeout=30).json()
     if "data" not in r:
         return (r.get("error") or {}).get("message", "no data returned")[:300]
-    last_err = ""
+    last_err, got_any = "", False
     conn = get_conn()
     cur = conn.cursor()
     for post in r["data"]:
         ins, err = _media_insights(post["id"], page["page_access_token"])
         last_err = err or last_err
+        got_any = got_any or bool(ins)
         cur.execute("""
             INSERT INTO post_metrics (ig_media_id, fan_page_id, permalink, media_type, caption, posted_at,
                                       views, reach, likes, comments, saves, shares)
@@ -302,7 +303,7 @@ def _pull_page_metrics(page):
     conn.close()
     if not r["data"]:
         return "no posts yet"
-    return last_err
+    return "" if got_any else last_err   # some old posts lack a metric; only warn when nothing came back
 
 def _pull_analytics_once():
     """One pass over every active page. Skips if a pass is already running."""
