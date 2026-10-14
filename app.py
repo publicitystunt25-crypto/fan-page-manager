@@ -72,6 +72,7 @@ def init_db():
             posted_at TIMESTAMPTZ
         );
         ALTER TABLE clip_submissions ADD COLUMN IF NOT EXISTS variants TEXT;
+        ALTER TABLE fan_pages ADD COLUMN IF NOT EXISTS name_locked BOOLEAN DEFAULT FALSE;
         ALTER TABLE fan_pages ADD COLUMN IF NOT EXISTS analytics_error TEXT;
         ALTER TABLE fan_pages ADD COLUMN IF NOT EXISTS analytics_pulled_at TIMESTAMPTZ;
         CREATE TABLE IF NOT EXISTS post_metrics (
@@ -422,7 +423,7 @@ def sync_pages():
                 VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (fb_page_id) DO UPDATE
                   SET ig_account_id = EXCLUDED.ig_account_id,
-                      page_name = EXCLUDED.page_name,
+                      page_name = CASE WHEN fan_pages.name_locked THEN fan_pages.page_name ELSE EXCLUDED.page_name END,
                       page_access_token = EXCLUDED.page_access_token
                 RETURNING (xmax = 0) as inserted
             """, (fb_page_id, ig_id, page_name, page_token, group))
@@ -1717,7 +1718,8 @@ def _connect_with_token(short_token, group, only, exchange=True, extra_ids=()):
             INSERT INTO fan_pages (fb_page_id, ig_account_id, page_name, page_access_token, page_group)
             VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (fb_page_id) DO UPDATE
-              SET ig_account_id=EXCLUDED.ig_account_id, page_name=EXCLUDED.page_name,
+              SET ig_account_id=EXCLUDED.ig_account_id,
+                  page_name=CASE WHEN fan_pages.name_locked THEN fan_pages.page_name ELSE EXCLUDED.page_name END,
                   page_access_token=EXCLUDED.page_access_token
             RETURNING (xmax = 0) AS inserted""", (p["id"], ig["id"], name, token, group))
         inserted = cur.fetchone()[0]
@@ -2091,10 +2093,37 @@ def dashboard_refresh():
     threading.Thread(target=_pull_analytics_once, daemon=True).start()
     return jsonify({"started": True})
 
+# ── PAGE DISPLAY NAMES (page_names.json: {"<fan_pages id>": "Name"}; applied at startup, survives reconnects) ──
+
+PAGE_NAMES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_names.json")
+
+def _apply_page_names():
+    try:
+        with open(PAGE_NAMES_FILE, encoding="utf-8") as f:
+            names = json.load(f)
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        print(f"[names] could not read page_names.json: {type(e).__name__}")
+        return
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        for pid, name in names.items():
+            if str(pid).isdigit() and isinstance(name, str) and name.strip():
+                cur.execute("UPDATE fan_pages SET page_name=%s, name_locked=TRUE WHERE id=%s",
+                            (name.strip()[:80], int(pid)))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[names] {type(e).__name__}")
+
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
 init_db()
 _recover_interrupted_clips()
+_apply_page_names()
 _run_jobs_once()
 threading.Thread(target=_analytics_loop, daemon=True).start()
 threading.Thread(target=_clip_queue_loop, daemon=True).start()
