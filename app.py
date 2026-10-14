@@ -286,10 +286,16 @@ def _pull_page_metrics(page):
     for post in r["data"]:
         ins, err = _media_insights(post["id"], page["page_access_token"])
         if "__set" in ins:
+            before = REPOSTS_STATE["state"]
             if ins.pop("__set") == 0:
                 REPOSTS_STATE["state"] = "supported"
-            elif REPOSTS_STATE["state"] != "supported":
+            elif before != "supported":
                 REPOSTS_STATE["state"] = "rejected"
+            if REPOSTS_STATE["state"] != before:      # persist, so every process reports the same answer
+                try:
+                    _set_setting("reposts_metric", REPOSTS_STATE["state"])
+                except Exception as e:
+                    print(f"[analytics] could not store reposts state: {type(e).__name__}")
         last_err = err or last_err
         got_any = got_any or bool(ins)
         cur.execute("""
@@ -982,9 +988,11 @@ def analytics_status():
                    (SELECT COALESCE(SUM(views), 0) FROM post_metrics m WHERE m.fan_page_id = p.id) AS views
             FROM fan_pages p ORDER BY p.id""")
         rows = cur.fetchall()
+        cur.execute("SELECT value FROM app_settings WHERE key='reposts_metric'")
+        saved = cur.fetchone()
         cur.close()
         conn.close()
-        return jsonify({"pages": rows, "reposts_metric": REPOSTS_STATE["state"]})
+        return jsonify({"pages": rows, "reposts_metric": (saved["value"] if saved else None) or REPOSTS_STATE["state"]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
