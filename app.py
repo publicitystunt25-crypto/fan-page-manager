@@ -1981,6 +1981,68 @@ def _audit_worker(job):
     except Exception as e:
         print(f"[audit] could not store result: {type(e).__name__}")
 
+def _delete_old_worker(job):
+    """Deletes exactly the posts an earlier audit job listed as 'not from the bot', on the named pages only.
+    Every id is re-checked against post_log first, so a post the bot made can never be deleted here.
+    job["delete_old"] = {"from_audit": "<audit job id>", "page_ids": [..], "max": 200}"""
+    spec = job["delete_old"]
+    summary = {}
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT value FROM app_settings WHERE key=%s", (f"job_{spec['from_audit']}_result",))
+        row = cur.fetchone()
+        if not row or not row["value"]:
+            raise RuntimeError("audit result not found")
+        audit = json.loads(row["value"])
+        cur.execute("SELECT ig_post_id FROM post_log WHERE ig_post_id IS NOT NULL")
+        bot_posts = {r["ig_post_id"] for r in cur.fetchall()}
+        wanted = {int(p) for p in spec["page_ids"]}
+        cur.execute("SELECT id, page_name, page_access_token, auth_type FROM fan_pages WHERE id = ANY(%s)", (sorted(wanted),))
+        pages = {r["id"]: r for r in cur.fetchall()}
+        cur.close()
+        conn.close()
+
+        budget = int(spec.get("max", 200))
+        deleted_ids, failed = [], []
+        per_page = {}
+        for name, info in audit.get("pages", {}).items():
+            pid = int(info["id"])
+            page = pages.get(pid)
+            if pid not in wanted or not page:
+                continue
+            g = _graph_for(page.get("auth_type"))
+            n_ok = 0
+            for item in info.get("not_from_bot", []):
+                mid = item.get("id")
+                if not mid or mid in bot_posts or budget <= 0:
+                    continue
+                budget -= 1
+                r = requests.delete(f"{g}/{mid}", params={"access_token": page["page_access_token"]}, timeout=30).json()
+                if r.get("success"):
+                    n_ok += 1
+                    deleted_ids.append(mid)
+                else:
+                    failed.append(f"{mid}: {(r.get('error') or {}).get('message', str(r))[:80]}")
+                time.sleep(random.uniform(3, 6))
+            per_page[name] = n_ok
+        if deleted_ids:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM post_metrics WHERE ig_media_id = ANY(%s)", (deleted_ids,))
+            conn.commit()
+            cur.close()
+            conn.close()
+        summary = {"deleted": len(deleted_ids), "per_page": per_page, "failed": failed[:10], "failed_count": len(failed)}
+    except Exception as e:
+        summary = {"failed": type(e).__name__}
+    text = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+    print(f"[delete-old] {job['id']}: {text[:300]}")
+    try:
+        _set_setting(f"job_{job['id']}_result", text)
+    except Exception as e:
+        print(f"[delete-old] could not store result: {type(e).__name__}")
+
 def _run_jobs_once():
     """Claim every job in jobs.json that has never started (the INSERT only succeeds once per id)."""
     try:
@@ -1996,6 +2058,12 @@ def _run_jobs_once():
         conn = get_conn()
         cur = conn.cursor()
         for job in jobs:
+            if isinstance(job.get("delete_old"), dict) and isinstance(job.get("id"), str):
+                cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
+                               ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
+                if cur.fetchone():
+                    threading.Thread(target=_delete_old_worker, args=(job,), daemon=True).start()
+                continue
             if isinstance(job.get("audit"), dict) and isinstance(job.get("id"), str):
                 cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
                                ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
