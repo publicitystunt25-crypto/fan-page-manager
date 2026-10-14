@@ -100,6 +100,18 @@ def init_db():
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
         ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS reposts INTEGER DEFAULT 0;
+        ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS follows INTEGER DEFAULT 0;
+        ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS profile_visits INTEGER DEFAULT 0;
+        CREATE TABLE IF NOT EXISTS page_daily (
+            fan_page_id INTEGER REFERENCES fan_pages(id),
+            day DATE,
+            followers INTEGER,
+            media_count INTEGER,
+            new_followers INTEGER,
+            profile_views INTEGER,
+            reach INTEGER,
+            PRIMARY KEY (fan_page_id, day)
+        );
         CREATE TABLE IF NOT EXISTS analytics_snapshots (
             id SERIAL PRIMARY KEY,
             fan_page_id INTEGER REFERENCES fan_pages(id),
@@ -349,12 +361,14 @@ def _quote_scheduler_loop():
         time.sleep(30)
 
 _pull_lock = threading.Lock()
-REPOSTS_STATE = {"state": "untested"}   # untested / supported / rejected
+METRIC_STATE = {"reposts": "untested", "follows": "untested", "profile_visits": "untested"}   # untested / supported / rejected
 # metric sets to try, richest first (availability differs by media type and account)
-INSIGHT_SETS = ("views,reach,saved,shares,reposts,total_interactions", "views,reach,saved,shares,total_interactions", "views,reach,saved", "reach,saved,shares", "reach,saved")
+INSIGHT_SETS = ("views,reach,saved,shares,reposts,follows,profile_visits,total_interactions",
+                "views,reach,saved,shares,reposts,total_interactions",
+                "views,reach,saved,shares,total_interactions", "views,reach,saved", "reach,saved,shares", "reach,saved")
 
 def _media_insights(media_id, token, graph=None):
-    """Latest insights for one post -> (dict, error message)."""
+    """Latest insights for one post -> (dict, error message). The dict includes '__set': index of the metric set used."""
     err = ""
     for idx, metrics in enumerate(INSIGHT_SETS):
         try:
@@ -369,10 +383,30 @@ def _media_insights(media_id, token, graph=None):
                 v = vals[0].get("value", (item.get("total_value") or {}).get("value"))
                 if isinstance(v, (int, float)):
                     out[item["name"]] = int(v)
-            out["__set"] = idx          # 0 = the reposts request was accepted
+            out["__set"] = idx
             return out, ""
         err = (r.get("error") or {}).get("message", "")[:200]
     return {}, err
+
+def _note_metric_support(ins):
+    """Remember which optional metrics Instagram accepts (persisted, so every process reports the same answer)."""
+    idx = ins.pop("__set", None)
+    if idx is None:
+        return
+    asked = {"reposts": idx <= 1, "follows": idx == 0, "profile_visits": idx == 0}
+    changed = False
+    for key in METRIC_STATE:
+        before = METRIC_STATE[key]
+        if key in ins:
+            METRIC_STATE[key] = "supported"
+        elif asked[key] is False and before != "supported":
+            METRIC_STATE[key] = "rejected"
+        changed = changed or METRIC_STATE[key] != before
+    if changed:
+        try:
+            _set_setting("metric_support", json.dumps(METRIC_STATE))
+        except Exception as e:
+            print(f"[analytics] could not store metric support: {type(e).__name__}")
 
 def _pull_page_metrics(page):
     """Refresh the latest numbers for a page's recent posts. Returns an error string ('' when fine)."""
@@ -386,34 +420,25 @@ def _pull_page_metrics(page):
     cur = conn.cursor()
     for post in r["data"]:
         ins, err = _media_insights(post["id"], page["page_access_token"], _graph_for(page.get("auth_type")))
-        if "__set" in ins:
-            before = REPOSTS_STATE["state"]
-            if ins.pop("__set") == 0:
-                REPOSTS_STATE["state"] = "supported"
-            elif before != "supported":
-                REPOSTS_STATE["state"] = "rejected"
-            if REPOSTS_STATE["state"] != before:      # persist, so every process reports the same answer
-                try:
-                    _set_setting("reposts_metric", REPOSTS_STATE["state"])
-                except Exception as e:
-                    print(f"[analytics] could not store reposts state: {type(e).__name__}")
+        _note_metric_support(ins)
         last_err = err or last_err
         got_any = got_any or bool(ins)
         cur.execute("""
             INSERT INTO post_metrics (ig_media_id, fan_page_id, permalink, media_type, caption, posted_at,
-                                      views, reach, likes, comments, saves, shares, reposts)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                      views, reach, likes, comments, saves, shares, reposts, follows, profile_visits)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (ig_media_id) DO UPDATE SET
                 prev_views = post_metrics.views, prev_likes = post_metrics.likes,
                 permalink = EXCLUDED.permalink, caption = EXCLUDED.caption,
                 views = EXCLUDED.views, reach = EXCLUDED.reach, likes = EXCLUDED.likes,
                 comments = EXCLUDED.comments, saves = EXCLUDED.saves, shares = EXCLUDED.shares, reposts = EXCLUDED.reposts,
+                follows = EXCLUDED.follows, profile_visits = EXCLUDED.profile_visits,
                 updated_at = NOW()""",
             (post["id"], page["id"], post.get("permalink"),
              post.get("media_product_type") or post.get("media_type"), (post.get("caption") or "")[:300],
              post.get("timestamp"), ins.get("views", 0), ins.get("reach", 0),
              post.get("like_count", 0), post.get("comments_count", 0), ins.get("saved", 0), ins.get("shares", 0),
-             ins.get("reposts", 0)))
+             ins.get("reposts", 0), ins.get("follows", 0), ins.get("profile_visits", 0)))
         time.sleep(0.2)
     conn.commit()
     cur.close()
@@ -421,6 +446,76 @@ def _pull_page_metrics(page):
     if not r["data"]:
         return "no posts yet"
     return "" if got_any else last_err   # some old posts lack a metric; only warn when nothing came back
+
+def _account_total(g, ig_id, token, metric, since, until):
+    """Total of an account-level metric over [since, until) -> int or None."""
+    r = requests.get(f"{g}/{ig_id}/insights",
+                     params={"metric": metric, "period": "day", "metric_type": "total_value",
+                             "since": int(since), "until": int(until), "access_token": token}, timeout=20).json()
+    for item in r.get("data", []):
+        v = (item.get("total_value") or {}).get("value")
+        if isinstance(v, (int, float)):
+            return int(v)
+    return None
+
+def _pull_account_daily(page):
+    """Followers snapshot for today, plus Instagram's own daily new-followers, profile visits and reach.
+    Days are UTC dates. Safe to call repeatedly: it upserts, and only asks for days it is missing."""
+    from datetime import datetime, timedelta, timezone
+    g = _graph_for(page.get("auth_type"))
+    ig, tok, pid = page["ig_account_id"], page["page_access_token"], page["id"]
+    prof = requests.get(f"{g}/{ig}", params={"fields": "followers_count,media_count", "access_token": tok}, timeout=20).json()
+    if "followers_count" not in prof:
+        return
+    today = datetime.now(timezone.utc).date()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO page_daily (fan_page_id, day, followers, media_count) VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (fan_page_id, day) DO UPDATE SET followers=EXCLUDED.followers, media_count=EXCLUDED.media_count""",
+                (pid, today, prof.get("followers_count"), prof.get("media_count")))
+    conn.commit()
+
+    # new followers per day (time series, last 7 days). end_time marks the END of the day it describes.
+    try:
+        now = datetime.now(timezone.utc)
+        r = requests.get(f"{g}/{ig}/insights",
+                         params={"metric": "follower_count", "period": "day",
+                                 "since": int((now - timedelta(days=7)).timestamp()), "until": int(now.timestamp()),
+                                 "access_token": tok}, timeout=20).json()
+        for item in r.get("data", []):
+            for v in item.get("values", []):
+                if isinstance(v.get("value"), (int, float)) and v.get("end_time"):
+                    end = datetime.strptime(v["end_time"][:19], "%Y-%m-%dT%H:%M:%S").date()
+                    day = end - timedelta(days=1)
+                    cur.execute("""INSERT INTO page_daily (fan_page_id, day, new_followers) VALUES (%s, %s, %s)
+                                   ON CONFLICT (fan_page_id, day) DO UPDATE SET new_followers=EXCLUDED.new_followers""",
+                                (pid, day, int(v["value"])))
+        conn.commit()
+    except Exception as e:
+        print(f"[daily] new followers: {type(e).__name__}")
+
+    # profile visits and reach for the last 3 completed days, only the ones we do not have yet
+    cur.execute("SELECT day, profile_views, reach FROM page_daily WHERE fan_page_id=%s AND day >= %s", (pid, today - timedelta(days=3)))
+    have = {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+    for back in (1, 2, 3):
+        day = today - timedelta(days=back)
+        if have.get(day, (None, None))[0] is not None:
+            continue
+        start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp()
+        try:
+            pv = _account_total(g, ig, tok, "profile_views", start, start + 86400)
+            rc = _account_total(g, ig, tok, "reach", start, start + 86400)
+            if pv is not None or rc is not None:
+                cur.execute("""INSERT INTO page_daily (fan_page_id, day, profile_views, reach) VALUES (%s, %s, %s, %s)
+                               ON CONFLICT (fan_page_id, day) DO UPDATE SET profile_views=EXCLUDED.profile_views, reach=EXCLUDED.reach""",
+                            (pid, day, pv, rc))
+        except Exception as e:
+            print(f"[daily] day insights: {type(e).__name__}")
+            break
+        time.sleep(0.2)
+    conn.commit()
+    cur.close()
+    conn.close()
 
 def _pull_analytics_once():
     """One pass over every active page. Skips if a pass is already running."""
@@ -439,6 +534,10 @@ def _pull_analytics_once():
             except Exception as e:
                 err = type(e).__name__
                 print(f"[analytics] page {page['id']}: {err}")
+            try:
+                _pull_account_daily(page)
+            except Exception as e:
+                print(f"[analytics] daily {page['id']}: {type(e).__name__}")
             try:
                 conn = get_conn()
                 cur = conn.cursor()
@@ -869,11 +968,19 @@ def analytics_status():
                    (SELECT COALESCE(SUM(views), 0) FROM post_metrics m WHERE m.fan_page_id = p.id) AS views
             FROM fan_pages p ORDER BY p.id""")
         rows = cur.fetchall()
-        cur.execute("SELECT value FROM app_settings WHERE key='reposts_metric'")
+        cur.execute("SELECT value FROM app_settings WHERE key='metric_support'")
         saved = cur.fetchone()
+        cur.execute("SELECT COUNT(*) AS n, COUNT(DISTINCT fan_page_id) AS pages, MAX(day)::text AS last_day FROM page_daily")
+        daily = cur.fetchone()
         cur.close()
         conn.close()
-        return jsonify({"pages": rows, "reposts_metric": (saved["value"] if saved else None) or REPOSTS_STATE["state"]})
+        support = dict(METRIC_STATE)
+        try:
+            support.update(json.loads(saved["value"])) if saved else None
+        except Exception:
+            pass
+        return jsonify({"pages": rows, "reposts_metric": support.get("reposts"), "metric_support": support,
+                        "daily_rows": daily})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2144,23 +2251,41 @@ td a{color:var(--accent)}.up{color:var(--good)}.empty{padding:24px;color:var(--m
 <select id="fgroup"><option value="">All groups</option><option value="clipper">Clipper</option><option value="promo">Promo</option></select>
 <input id="fq" placeholder="Search captions"><button id="refresh">Refresh now</button></div>
 <div class="pages" id="pages"></div>
+<h2 style="font-size:16px;margin:18px 0 8px">Page growth</h2>
+<div class="wrap"><table style="min-width:760px"><thead id="ghead"></thead><tbody id="gbody"></tbody></table></div>
+<h2 style="font-size:16px;margin:18px 0 8px">Day by day <span style="color:var(--muted);font-weight:400;font-size:13px">(UTC days)</span></h2>
+<div class="wrap"><table style="min-width:640px"><thead id="dhead"></thead><tbody id="dbody"></tbody></table></div>
+<h2 style="font-size:16px;margin:18px 0 8px">Posts</h2>
 <div class="wrap"><table><thead id="head"></thead><tbody id="body"></tbody></table></div>
 <script>
-const COLS=[['page','Page'],['posted','Posted'],['caption','Caption'],['views','Views',1],['reach','Reach',1],['likes','Likes',1],['comments','Comments',1],['saves','Saves',1],['shares','Shares',1],['reposts','Reposts',1],['views_delta','+Views',1]];
-let rows=[],pages=[],sortKey='ts',asc=false;
+const COLS=[['page','Page'],['posted','Posted'],['caption','Caption'],['views','Views',1],['reach','Reach',1],['likes','Likes',1],['comments','Comments',1],['saves','Saves',1],['shares','Shares',1],['reposts','Reposts',1],['follows','Follows',1],['profile_visits','Visits',1],['views_delta','+Views',1]];
+let rows=[],pages=[],growth=[],daily=[],sortKey='ts',asc=false;
 const $=id=>document.getElementById(id);
 const fmt=n=>(n==null?0:n).toLocaleString();
 function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
 async function api(url,opt={}){let key=localStorage.getItem('adminKey')||'';if(!key){key=prompt('Enter admin key:')||'';localStorage.setItem('adminKey',key)}
  const r=await fetch(url,{...opt,headers:{'X-Admin-Key':key}});if(r.status===401){localStorage.removeItem('adminKey');$('sub').textContent='Wrong key - reload and try again.';throw 0}
  if(r.status===503){$('sub').textContent='ADMIN_KEY is not set on the server.';throw 0}return r.json()}
-async function load(){const j=await api('/dashboard/data');rows=j.posts;pages=j.pages;
+async function load(){const j=await api('/dashboard/data');rows=j.posts;pages=j.pages;growth=j.growth||[];daily=j.daily||[];
  const sel=$('fpage'),cur=sel.value;sel.replaceChildren(new Option('All pages',''),...pages.map(p=>new Option(p.page_name,p.page_name)));sel.value=cur;render()}
+function renderGrowth(){
+ const pg=$('fpage').value,gr=$('fgroup').value,keep=x=>(!pg||x.page===pg)&&(!gr||x.group===gr);
+ const sg=n=>n==null?'-':(n>0?'+':'')+fmt(n),dash=n=>n==null?'-':fmt(n);
+ const hdr=(id,names)=>{const tr=el('tr');names.forEach((h,i)=>tr.append(el('th',i?'n':'',h)));$(id).replaceChildren(tr)};
+ hdr('ghead',['Page','Followers','+24h','+7d','Since start','Profile visits (7d)','New followers (7d)','Reach (7d)']);
+ const gb=$('gbody');gb.replaceChildren();const g=growth.filter(keep);
+ if(!g.length){const tr=el('tr'),td=el('td','empty','No follower history yet. It starts with the next refresh and builds each day.');td.colSpan=8;tr.append(td);gb.append(tr)}
+ for(const x of g){const tr=el('tr');tr.append(el('td',0,x.page),el('td','n',fmt(x.followers)),el('td','n',sg(x.d1)),el('td','n',sg(x.d7)),el('td','n',sg(x.since)),el('td','n',dash(x.pv7)),el('td','n',dash(x.nf7)),el('td','n',dash(x.reach7)));gb.append(tr)}
+ hdr('dhead',['Day','Page','Followers','New followers','Profile visits','Reach','Posts']);
+ const db=$('dbody');db.replaceChildren();const dd=daily.filter(x=>keep({page:x.page_name,group:x.page_group})).slice(0,120);
+ if(!dd.length){const tr=el('tr'),td=el('td','empty','Nothing yet.');td.colSpan=7;tr.append(td);db.append(tr)}
+ for(const x of dd){const tr=el('tr');tr.append(el('td',0,x.day),el('td',0,x.page_name),el('td','n',dash(x.followers)),el('td','n',dash(x.new_followers)),el('td','n',dash(x.profile_views)),el('td','n',dash(x.reach)),el('td','n',x.posts?String(x.posts):'-'));db.append(tr)}
+}
 function filtered(){const pg=$('fpage').value,gr=$('fgroup').value,q=$('fq').value.toLowerCase();
  return rows.filter(r=>(!pg||r.page===pg)&&(!gr||r.group===gr)&&(!q||(r.caption||'').toLowerCase().includes(q)))}
-function render(){const f=filtered();const sum=k=>f.reduce((a,r)=>a+(r[k]||0),0);
+function render(){renderGrowth();const f=filtered();const sum=k=>f.reduce((a,r)=>a+(r[k]||0),0);
  $('sub').textContent=f.length+' posts - '+pages.length+' pages';
- $('cards').replaceChildren(...[['Posts',f.length],['Views',sum('views')],['Reach',sum('reach')],['Likes',sum('likes')],['Comments',sum('comments')],['Saves',sum('saves')],['Shares',sum('shares')],['Reposts',sum('reposts')]].map(([l,v])=>{const c=el('div','card');c.append(el('b',0,fmt(v)),el('span',0,l));return c}));
+ $('cards').replaceChildren(...[['Posts',f.length],['Views',sum('views')],['Reach',sum('reach')],['Likes',sum('likes')],['Comments',sum('comments')],['Saves',sum('saves')],['Shares',sum('shares')],['Reposts',sum('reposts')],['Follows',sum('follows')],['Visits',sum('profile_visits')]].map(([l,v])=>{const c=el('div','card');c.append(el('b',0,fmt(v)),el('span',0,l));return c}));
  $('pages').replaceChildren(...pages.map(p=>{const d=el('div','pg'+(p.analytics_error?' err':''));d.append(el('b',0,p.page_name),el('small',0,(p.page_group||'')+(p.active?'':' (paused)')+' - pulled '+(p.pulled||'never')));
   if(p.analytics_error)d.append(el('small','e',p.analytics_error));return d}));
  $('head').replaceChildren((()=>{const tr=el('tr');for(const [k,l,n] of COLS){const th=el('th',n?'n':'',l+(sortKey===k?(asc?' ▲':' ▼'):''));th.onclick=()=>{if(sortKey===k)asc=!asc;else{sortKey=k;asc=false}render()};tr.append(th)}return tr})());
@@ -2171,7 +2296,7 @@ function render(){const f=filtered();const sum=k=>f.reduce((a,r)=>a+(r[k]||0),0)
  for(const r of f){const tr=el('tr');
   tr.append(el('td',0,r.page),el('td',0,r.posted||''));
   const c=el('td','cap');if(r.permalink){const a=el('a',0,(r.caption||'(no caption)').slice(0,90));a.href=r.permalink;a.target='_blank';a.rel='noopener noreferrer';c.append(a)}else c.textContent=(r.caption||'').slice(0,90);tr.append(c);
-  for(const k of ['views','reach','likes','comments','saves','shares','reposts'])tr.append(el('td','n',fmt(r[k])));
+  for(const k of ['views','reach','likes','comments','saves','shares','reposts','follows','profile_visits'])tr.append(el('td','n',fmt(r[k])));
   tr.append(el('td','n'+(r.views_delta>0?' up':''),r.views_delta>0?'+'+fmt(r.views_delta):'-'));body.append(tr)}}
 for(const id of ['fpage','fgroup'])$(id).onchange=render;$('fq').oninput=render;
 $('refresh').onclick=async()=>{$('refresh').disabled=true;await api('/dashboard/refresh',{method:'POST'});$('sub').textContent='Refreshing - reload in a minute...';setTimeout(()=>{$('refresh').disabled=false},4000)};
@@ -2181,6 +2306,33 @@ load().catch(()=>{});
 @app.route("/dashboard", methods=["GET"])
 def dashboard_page():
     return Response(DASHBOARD_HTML, mimetype="text/html")
+
+def _growth_summary(daily):
+    """Per page: followers now, change over 1 day / 7 days / since the first snapshot, and 7-day totals."""
+    from datetime import date, timedelta
+    by_page = {}
+    for d in daily:
+        by_page.setdefault(d["fan_page_id"], []).append(d)
+    out = []
+    for pid, rows in by_page.items():
+        rows.sort(key=lambda r: r["day"])
+        snap = {r["day"]: r["followers"] for r in rows if r["followers"] is not None}
+        if not snap:
+            continue
+        latest_day = max(snap)
+        latest = snap[latest_day]
+        ld = date.fromisoformat(latest_day)
+        prev = lambda n: snap.get((ld - timedelta(days=n)).isoformat())
+        first = snap[min(snap)]
+        week = [r for r in rows if date.fromisoformat(r["day"]) > ld - timedelta(days=7)]
+        total = lambda k: (sum(r[k] for r in week if r[k] is not None) if any(r[k] is not None for r in week) else None)
+        out.append({"page": rows[0]["page_name"], "group": rows[0]["page_group"], "followers": latest,
+                    "d1": None if prev(1) is None else latest - prev(1),
+                    "d7": None if prev(7) is None else latest - prev(7),
+                    "since": None if len(snap) < 2 else latest - first,
+                    "pv7": total("profile_views"), "nf7": total("new_followers"), "reach7": total("reach")})
+    out.sort(key=lambda x: x["page"])
+    return out
 
 @app.route("/dashboard/data", methods=["GET"])
 def dashboard_data():
@@ -2194,7 +2346,7 @@ def dashboard_data():
             SELECT p.page_name AS page, p.page_group AS "group", m.permalink, m.media_type, m.caption,
                    to_char(m.posted_at AT TIME ZONE 'America/New_York', 'Mon DD, HH12:MI AM') AS posted,
                    EXTRACT(EPOCH FROM m.posted_at)::bigint AS ts,
-                   m.views, m.reach, m.likes, m.comments, m.saves, m.shares, m.reposts,
+                   m.views, m.reach, m.likes, m.comments, m.saves, m.shares, m.reposts, m.follows, m.profile_visits,
                    m.views - COALESCE(m.prev_views, m.views) AS views_delta
             FROM post_metrics m JOIN fan_pages p ON p.id = m.fan_page_id
             ORDER BY m.posted_at DESC NULLS LAST LIMIT 3000""")
@@ -2204,9 +2356,20 @@ def dashboard_data():
                    to_char(analytics_pulled_at AT TIME ZONE 'America/New_York', 'Mon DD HH12:MI AM') AS pulled
             FROM fan_pages ORDER BY id""")
         pages = cur.fetchall()
+        cur.execute("""
+            SELECT d.fan_page_id, p.page_name, p.page_group, d.day::text AS day, d.followers, d.new_followers,
+                   d.profile_views, d.reach
+            FROM page_daily d JOIN fan_pages p ON p.id = d.fan_page_id
+            WHERE d.day >= CURRENT_DATE - 45 ORDER BY d.day DESC, p.page_name""")
+        daily = cur.fetchall()
+        cur.execute("""SELECT fan_page_id, (posted_at AT TIME ZONE 'UTC')::date::text AS day, COUNT(*) AS n
+                       FROM post_metrics WHERE posted_at >= NOW() - INTERVAL '45 days' GROUP BY 1, 2""")
+        posts_per_day = {(r["fan_page_id"], r["day"]): r["n"] for r in cur.fetchall()}
         cur.close()
         conn.close()
-        return jsonify({"posts": posts, "pages": pages})
+        for d in daily:
+            d["posts"] = posts_per_day.get((d["fan_page_id"], d["day"]), 0)
+        return jsonify({"posts": posts, "pages": pages, "daily": daily, "growth": _growth_summary(daily)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
