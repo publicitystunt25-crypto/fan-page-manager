@@ -1036,6 +1036,18 @@ def migrate():
 # ── PUBLIC CLIP SUBMISSIONS + APPROVAL QUEUE ──────────────────────────────────
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY")
+# The review dashboard (/admin) and the public submit form (/submit) are off unless ENABLE_ADMIN=1,
+# so nothing can be submitted into a queue nobody is reviewing.
+ADMIN_DASHBOARD = os.environ.get("ENABLE_ADMIN") == "1"
+
+@app.before_request
+def _dashboard_switch():
+    if ADMIN_DASHBOARD:
+        return None
+    path = request.path.rstrip("/")
+    if path in ("/admin", "/submit") or path.startswith("/admin/"):
+        return "not found", 404
+
 SUBMIT_LIMIT, SUBMIT_WINDOW = 5, 3600     # per IP: 5 submissions / hour
 MAX_PENDING = 200
 _submit_hits = {}                         # ip -> [timestamps]
