@@ -17,6 +17,11 @@ app = Flask(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 USER_ACCESS_TOKEN = os.environ.get("FB_USER_TOKEN")
 GRAPH = "https://graph.facebook.com/" + os.environ.get("FB_GRAPH_VERSION", "v23.0")
+IG_LOGIN_GRAPH = "https://graph.instagram.com/" + os.environ.get("FB_GRAPH_VERSION", "v23.0")
+
+def _graph_for(auth_type):
+    """Facebook-linked pages use graph.facebook.com; accounts connected with Instagram Login use graph.instagram.com."""
+    return IG_LOGIN_GRAPH if auth_type == "instagram" else GRAPH
 
 PAGE_GROUPS = {"promo", "clipper"}
 
@@ -73,6 +78,8 @@ def init_db():
         );
         ALTER TABLE clip_submissions ADD COLUMN IF NOT EXISTS variants TEXT;
         ALTER TABLE fan_pages ADD COLUMN IF NOT EXISTS name_locked BOOLEAN DEFAULT FALSE;
+        ALTER TABLE fan_pages ADD COLUMN IF NOT EXISTS auth_type TEXT DEFAULT 'facebook';
+        ALTER TABLE fan_pages ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMPTZ;
         ALTER TABLE fan_pages ADD COLUMN IF NOT EXISTS analytics_error TEXT;
         ALTER TABLE fan_pages ADD COLUMN IF NOT EXISTS analytics_pulled_at TIMESTAMPTZ;
         CREATE TABLE IF NOT EXISTS post_metrics (
@@ -118,15 +125,16 @@ def get_ig_for_page(page_access_token, fb_page_id):
     data = r.json()
     return data.get("instagram_business_account", {}).get("id")
 
-def post_to_ig(ig_account_id, page_token, media_url, caption, media_type="IMAGE"):
+def post_to_ig(ig_account_id, page_token, media_url, caption, media_type="IMAGE", graph=None):
     """Post a photo or video to one IG account."""
+    g = graph or GRAPH
     if media_type == "VIDEO":
         payload = {"video_url": media_url, "media_type": "REELS", "caption": caption,
                    "access_token": page_token}
     else:
         payload = {"image_url": media_url, "caption": caption, "access_token": page_token}
 
-    r = requests.post(f"{GRAPH}/{ig_account_id}/media", data=payload, timeout=30)
+    r = requests.post(f"{g}/{ig_account_id}/media", data=payload, timeout=30)
     result = r.json()
     creation_id = result.get("id")
     if not creation_id:
@@ -135,7 +143,7 @@ def post_to_ig(ig_account_id, page_token, media_url, caption, media_type="IMAGE"
     # IG processes the container asynchronously; publishing early gives "Media ID is not available"
     deadline = time.time() + (180 if media_type == "VIDEO" else 45)
     while time.time() < deadline:
-        s = requests.get(f"{GRAPH}/{creation_id}",
+        s = requests.get(f"{g}/{creation_id}",
                          params={"fields": "status_code", "access_token": page_token},
                          timeout=15).json()
         status = s.get("status_code")
@@ -147,7 +155,7 @@ def post_to_ig(ig_account_id, page_token, media_url, caption, media_type="IMAGE"
     else:
         return None, "media processing timed out"
 
-    pub = requests.post(f"{GRAPH}/{ig_account_id}/media_publish",
+    pub = requests.post(f"{g}/{ig_account_id}/media_publish",
                         data={"creation_id": creation_id, "access_token": page_token},
                         timeout=30)
     pub_result = pub.json()
@@ -178,7 +186,7 @@ def _post_to_all_pages(media_url, caption, media_type="IMAGE", delay=(3, 3), gro
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        sql = "SELECT id, ig_account_id, page_access_token, page_name FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL AND page_group=%s"
+        sql = "SELECT id, ig_account_id, page_access_token, page_name, auth_type FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL AND page_group=%s"
         args = [group]
         if page_ids is not None:   # only these fan_pages ids
             sql += " AND id = ANY(%s)"
@@ -192,7 +200,7 @@ def _post_to_all_pages(media_url, caption, media_type="IMAGE", delay=(3, 3), gro
             if n:
                 time.sleep(random.uniform(*delay))
             post_id, err = post_to_ig(page["ig_account_id"], page["page_access_token"],
-                                      media_url, caption, media_type)
+                                      media_url, caption, media_type, graph=_graph_for(page.get("auth_type")))
             conn2 = get_conn()
             cur2 = conn2.cursor()
             cur2.execute("""
@@ -252,12 +260,12 @@ REPOSTS_STATE = {"state": "untested"}   # untested / supported / rejected
 # metric sets to try, richest first (availability differs by media type and account)
 INSIGHT_SETS = ("views,reach,saved,shares,reposts,total_interactions", "views,reach,saved,shares,total_interactions", "views,reach,saved", "reach,saved,shares", "reach,saved")
 
-def _media_insights(media_id, token):
+def _media_insights(media_id, token, graph=None):
     """Latest insights for one post -> (dict, error message)."""
     err = ""
     for idx, metrics in enumerate(INSIGHT_SETS):
         try:
-            r = requests.get(f"{GRAPH}/{media_id}/insights",
+            r = requests.get(f"{graph or GRAPH}/{media_id}/insights",
                              params={"metric": metrics, "access_token": token}, timeout=20).json()
         except Exception as e:
             return {}, type(e).__name__
@@ -275,7 +283,7 @@ def _media_insights(media_id, token):
 
 def _pull_page_metrics(page):
     """Refresh the latest numbers for a page's recent posts. Returns an error string ('' when fine)."""
-    r = requests.get(f"{GRAPH}/{page['ig_account_id']}/media",
+    r = requests.get(f"{_graph_for(page.get('auth_type'))}/{page['ig_account_id']}/media",
                      params={"fields": "id,caption,media_type,media_product_type,permalink,timestamp,like_count,comments_count",
                              "limit": 25, "access_token": page["page_access_token"]}, timeout=30).json()
     if "data" not in r:
@@ -284,7 +292,7 @@ def _pull_page_metrics(page):
     conn = get_conn()
     cur = conn.cursor()
     for post in r["data"]:
-        ins, err = _media_insights(post["id"], page["page_access_token"])
+        ins, err = _media_insights(post["id"], page["page_access_token"], _graph_for(page.get("auth_type")))
         if "__set" in ins:
             before = REPOSTS_STATE["state"]
             if ins.pop("__set") == 0:
@@ -328,7 +336,7 @@ def _pull_analytics_once():
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT id, ig_account_id, page_access_token FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL")
+        cur.execute("SELECT id, ig_account_id, page_access_token, auth_type FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL")
         pages = cur.fetchall()
         cur.close()
         conn.close()
@@ -1020,14 +1028,14 @@ def followers():
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT id, ig_account_id, page_name, page_access_token FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL")
+        cur.execute("SELECT id, ig_account_id, page_name, page_access_token, auth_type FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL")
         pages = cur.fetchall()
         cur.close()
         conn.close()
 
         results = []
         for page in pages:
-            r = requests.get(f"{GRAPH}/{page['ig_account_id']}",
+            r = requests.get(f"{_graph_for(page.get('auth_type'))}/{page['ig_account_id']}",
                              params={"fields": "followers_count,username,media_count",
                                      "access_token": page["page_access_token"]},
                              timeout=10)
@@ -1106,7 +1114,7 @@ def delete_post():
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT page_access_token FROM fan_pages WHERE id=%s", (fan_page_id,))
+        cur.execute("SELECT page_access_token, auth_type FROM fan_pages WHERE id=%s", (fan_page_id,))
         page = cur.fetchone()
         cur.close()
         conn.close()
@@ -1114,7 +1122,7 @@ def delete_post():
         if not page:
             return jsonify({"error": "page not found"}), 404
 
-        r = requests.delete(f"{GRAPH}/{ig_post_id}",
+        r = requests.delete(f"{_graph_for(page.get('auth_type'))}/{ig_post_id}",
                             params={"access_token": page["page_access_token"]},
                             timeout=10)
         result = r.json()
@@ -1904,8 +1912,11 @@ def terms_page():
         ("Contact", ["Questions: {contact}."]),
     ])
 
-@app.route("/data-deletion", methods=["GET"])
+@app.route("/data-deletion", methods=["GET", "POST"])
 def data_deletion_page():
+    if request.method == "POST":   # Meta's deauthorize / data-deletion callback: acknowledge it
+        base = os.environ.get("BASE_URL", "https://fan-page-manager.onrender.com").rstrip("/")
+        return jsonify({"url": f"{base}/data-deletion", "confirmation_code": uuid.uuid4().hex[:12]})
     return _legal_page("Data Deletion", [
         ("How to request deletion", [
             "To have information we hold about you deleted, contact us via {contact} with the clip link or page name involved. We will remove it within 30 days and confirm once it is done.",
@@ -2127,6 +2138,159 @@ def _apply_page_names():
     except Exception as e:
         print(f"[names] {type(e).__name__}")
 
+# ── INSTAGRAM LOGIN (accounts connect directly; no Facebook Page involved) ───────────────────────
+
+IG_APP_ID = os.environ.get("IG_APP_ID")
+IG_APP_SECRET = os.environ.get("IG_APP_SECRET")
+IG_SCOPES = os.environ.get("IG_SCOPES", "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_insights")
+IG_GRAPH = "https://graph.instagram.com/" + os.environ.get("FB_GRAPH_VERSION", "v23.0")
+
+def _ig_redirect_uri():
+    return os.environ.get("BASE_URL", "https://fan-page-manager.onrender.com").rstrip("/") + "/connect/instagram/callback"
+
+IG_CONNECT_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Instagram</title>
+<style>
+:root{--bg:#f6f5fb;--card:#fff;--fg:#1c1b22;--muted:#6b6a78;--accent:#d62976;--line:#dcdae8}
+@media(prefers-color-scheme:dark){:root{--bg:#0f0e14;--card:#1a1923;--fg:#f1f0f7;--muted:#9a98aa;--line:#2e2c3b}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:28px;width:100%;max-width:480px}
+h1{margin:0 0 6px;font-size:22px}p{margin:0 0 14px;color:var(--muted);font-size:14px}
+label{display:block;font-size:13px;margin:14px 0 6px}select{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--fg);font:inherit}
+button{margin-top:20px;width:100%;padding:13px;border:0;border-radius:10px;background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}
+#msg{margin-top:14px;font-size:14px;color:#dc2626;min-height:20px}
+</style></head><body><div class="card"><h1>Connect an Instagram account</h1>
+<p>No Facebook Page needed. The account owner logs in on Instagram and approves. The account must be a Professional (Business or Creator) account and be added to the app as an Instagram tester.</p>
+<label for="g">This account will post:</label>
+<select id="g"><option value="clipper">Clips (clipper pages)</option><option value="promo">Mia promo content</option></select>
+<button id="b">Log in with Instagram</button><div id="msg" role="status"></div></div>
+<script>
+const b=document.getElementById('b'),m=document.getElementById('msg');
+b.onclick=async()=>{let key=localStorage.getItem('adminKey')||'';if(!key){key=prompt('Enter admin key:')||'';localStorage.setItem('adminKey',key)}
+m.textContent='';b.disabled=true;
+try{const r=await fetch('/connect/instagram/start',{method:'POST',headers:{'X-Admin-Key':key,'Content-Type':'application/json'},body:JSON.stringify({group:document.getElementById('g').value})});
+const j=await r.json();if(r.ok&&j.url){location.href=j.url;return}
+if(r.status===401)localStorage.removeItem('adminKey');m.textContent=j.error||'Something went wrong.';}
+catch(e){m.textContent='Network error.'}b.disabled=false};
+</script></body></html>"""
+
+@app.route("/connect/instagram", methods=["GET"])
+def connect_instagram_page():
+    return Response(IG_CONNECT_HTML, mimetype="text/html")
+
+@app.route("/connect/instagram/start", methods=["POST"])
+def connect_instagram_start():
+    denied = _admin_guard()
+    if denied:
+        return denied
+    if not (IG_APP_ID and IG_APP_SECRET):
+        return jsonify({"error": "IG_APP_ID and IG_APP_SECRET are not set on the server"}), 503
+    group = (request.get_json(silent=True) or {}).get("group", "clipper")
+    if group not in PAGE_GROUPS:
+        return jsonify({"error": "bad group"}), 400
+    from urllib.parse import urlencode
+    url = "https://www.instagram.com/oauth/authorize?" + urlencode({
+        "client_id": IG_APP_ID, "redirect_uri": _ig_redirect_uri(), "response_type": "code",
+        "scope": IG_SCOPES, "state": _sign_state(group), "force_authentication": "1"})
+    return jsonify({"url": url})
+
+@app.route("/connect/instagram/callback", methods=["GET"])
+def connect_instagram_callback():
+    if not (ADMIN_KEY and IG_APP_ID and IG_APP_SECRET):
+        return _result_page("Not configured", ["ADMIN_KEY, IG_APP_ID and IG_APP_SECRET must be set."], ok=False), 503
+    group = _check_state(request.args.get("state"))
+    if not group:
+        return _result_page("Link expired", ["Start again from /connect/instagram."], ok=False), 400
+    if request.args.get("error") or not request.args.get("code"):
+        return _result_page("Not connected", [request.args.get("error_description", "Instagram login was cancelled.")], ok=False), 400
+    try:
+        code = request.args["code"].split("#")[0]
+        tok = requests.post("https://api.instagram.com/oauth/access_token",
+                            data={"client_id": IG_APP_ID, "client_secret": IG_APP_SECRET, "grant_type": "authorization_code",
+                                  "redirect_uri": _ig_redirect_uri(), "code": code}, timeout=20).json()
+        if isinstance(tok.get("data"), list) and tok["data"]:
+            tok = tok["data"][0]
+        short = tok.get("access_token")
+        if not short:
+            return _result_page("Instagram login failed", [tok.get("error_message") or (tok.get("error") or {}).get("message", "no token returned")], ok=False), 400
+        long_ = requests.get("https://graph.instagram.com/access_token",
+                             params={"grant_type": "ig_exchange_token", "client_secret": IG_APP_SECRET,
+                                     "access_token": short}, timeout=20).json()
+        token = long_.get("access_token")
+        if not token:
+            return _result_page("Token exchange failed", [(long_.get("error") or {}).get("message", "no token returned")], ok=False), 400
+        expires_in = int(long_.get("expires_in") or 5184000)
+        me = requests.get(f"{IG_GRAPH}/me", params={"fields": "user_id,username,account_type", "access_token": token},
+                          timeout=20).json()
+        ig_id = str(me.get("user_id") or tok.get("user_id") or "")
+        username = me.get("username")
+        if not ig_id:
+            return _result_page("Could not read the account", [(me.get("error") or {}).get("message", "no account id returned")], ok=False), 400
+        if me.get("account_type") == "PERSONAL":
+            return _result_page("Not a Professional account", [f"@{username} is a personal account. Switch it to a Business or Creator account in Instagram settings, then try again."], ok=False), 400
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO fan_pages (fb_page_id, ig_account_id, page_name, page_access_token, page_group,
+                                   auth_type, token_expires_at)
+            VALUES (%s, %s, %s, %s, %s, 'instagram', NOW() + (%s || ' seconds')::interval)
+            ON CONFLICT (fb_page_id) DO UPDATE
+              SET ig_account_id=EXCLUDED.ig_account_id,
+                  page_name=CASE WHEN fan_pages.name_locked THEN fan_pages.page_name ELSE EXCLUDED.page_name END,
+                  page_access_token=EXCLUDED.page_access_token, auth_type='instagram',
+                  token_expires_at=EXCLUDED.token_expires_at
+            RETURNING (xmax = 0) AS inserted""", (f"ig:{ig_id}", ig_id, username or ig_id, token, group, str(expires_in)))
+        inserted = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        days = expires_in // 86400
+        return _result_page(f"Connected @{username}", [
+            f"{'Added to ' + group if inserted else 'Updated (group unchanged)'} - no Facebook Page needed.",
+            f"Token lasts about {days} days and the bot renews it automatically."])
+    except Exception as e:
+        print(f"[ig-connect] {type(e).__name__}")   # not str(e): request errors can contain tokens in the URL
+        return _result_page("Something went wrong", ["Check the server logs and try again."], ok=False), 500
+
+def _ig_refresh_tokens_once():
+    """Renew Instagram-login tokens that expire within 30 days (each refresh gives another 60 days)."""
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""SELECT id, page_access_token FROM fan_pages
+                       WHERE auth_type='instagram' AND (token_expires_at IS NULL OR token_expires_at < NOW() + INTERVAL '30 days')""")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[ig-refresh] {type(e).__name__}")
+        return
+    for row in rows:
+        try:
+            r = requests.get("https://graph.instagram.com/refresh_access_token",
+                             params={"grant_type": "ig_refresh_token", "access_token": row["page_access_token"]},
+                             timeout=20).json()
+            if r.get("access_token"):
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("""UPDATE fan_pages SET page_access_token=%s,
+                               token_expires_at=NOW() + (%s || ' seconds')::interval WHERE id=%s""",
+                            (r["access_token"], str(int(r.get("expires_in") or 5184000)), row["id"]))
+                conn.commit()
+                cur.close()
+                conn.close()
+                print(f"[ig-refresh] page {row['id']} renewed")
+            else:
+                print(f"[ig-refresh] page {row['id']}: {(r.get('error') or {}).get('message', 'no token')[:120]}")
+        except Exception as e:
+            print(f"[ig-refresh] page {row['id']}: {type(e).__name__}")
+
+def _ig_token_refresh_loop():
+    time.sleep(120)
+    while True:
+        _ig_refresh_tokens_once()
+        time.sleep(12 * 3600)
+
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
 init_db()
@@ -2135,6 +2299,7 @@ _apply_page_names()
 _run_jobs_once()
 threading.Thread(target=_analytics_loop, daemon=True).start()
 threading.Thread(target=_clip_queue_loop, daemon=True).start()
+threading.Thread(target=_ig_token_refresh_loop, daemon=True).start()
 threading.Thread(target=_quote_scheduler_loop, daemon=True).start()
 
 if __name__ == "__main__":
