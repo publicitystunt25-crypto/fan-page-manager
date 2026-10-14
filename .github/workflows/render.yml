@@ -1,0 +1,38 @@
+name: Render clips
+
+# Renders every "render": "remote" job in jobs.json that has no manifest yet, uploads the videos to
+# Cloudflare R2 and writes the manifest. The bot on Render then posts them.
+on:
+  push:
+    paths:
+      - "jobs.json"
+  workflow_dispatch:
+
+concurrency:
+  group: render-clips
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-render.txt
+
+      - name: Install
+        run: pip install -r requirements-render.txt
+
+      - name: Render and upload
+        run: python render_worker.py
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          RENDER_WORKERS: "3"
