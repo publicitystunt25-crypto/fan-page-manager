@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import time
 import random
 import threading
@@ -70,6 +71,7 @@ def init_db():
             decided_at TIMESTAMPTZ,
             posted_at TIMESTAMPTZ
         );
+        ALTER TABLE clip_submissions ADD COLUMN IF NOT EXISTS variants TEXT;
         CREATE TABLE IF NOT EXISTS analytics_snapshots (
             id SERIAL PRIMARY KEY,
             fan_page_id INTEGER REFERENCES fan_pages(id),
@@ -148,14 +150,19 @@ def upload_to_imgbb(image_path):
     result = r.json()
     return result.get("data", {}).get("url")
 
-def _post_to_all_pages(media_url, caption, media_type="IMAGE", delay=(3, 3), group="promo"):
+def _post_to_all_pages(media_url, caption, media_type="IMAGE", delay=(3, 3), group="promo", page_ids=None):
     """Posts to all active fan pages in `group` (promo / clipper), sleeping a random delay[0]..delay[1] seconds between pages.
     Returns a list of (page_name, ig_post_id, error)."""
     results = []
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT id, ig_account_id, page_access_token, page_name FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL AND page_group=%s", (group,))
+        sql = "SELECT id, ig_account_id, page_access_token, page_name FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL AND page_group=%s"
+        args = [group]
+        if page_ids is not None:   # only these fan_pages ids
+            sql += " AND id = ANY(%s)"
+            args.append(list(page_ids))
+        cur.execute(sql, args)
         pages = cur.fetchall()
         cur.close()
         conn.close()
@@ -554,13 +561,13 @@ def generate_clip_hook(title, channel_name, hint=""):
         print(f"[hook] {e}")
         return fallback
 
-def make_hook_overlay(text):
+def make_hook_overlay(text, top=None, max_size=92):
     """Transparent 1080x1920 PNG with the hook text: white, black outline, centered, wrapped."""
     W, H = 1080, 1920
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     max_w = W - 2 * HOOK_SIDE
-    size = 92
+    size = max_size
     while True:
         f = _bold_font(size)
         words, lines, cur = text.upper().split(), [], ""
@@ -576,7 +583,7 @@ def make_hook_overlay(text):
         if (widest <= max_w and len(lines) <= 3) or size <= 48:
             break
         size -= 4
-    y = HOOK_TOP
+    y = HOOK_TOP if top is None else top
     for line in lines:
         box = d.textbbox((0, 0), line, font=f, stroke_width=6)
         d.text(((W - (box[2] - box[0])) // 2 - box[0], y - box[1]), line, font=f,
@@ -586,12 +593,12 @@ def make_hook_overlay(text):
     img.save(path)
     return path
 
-def render_clip(src_path, slug, platform, hook=""):
+def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, hook_seconds=None):
     """1080x1920 output with a branded bar. Portrait picture fills the frame (bar overlaid above the
     caption area); landscape picture is centered over a blurred copy with the bar attached underneath.
     If `hook` is given it is shown as text over the first HOOK_SECONDS seconds."""
     bar = make_brand_bar(slug, platform)
-    hook_png = make_hook_overlay(hook) if hook else None
+    hook_png = make_hook_overlay(hook, hook_top, hook_size) if hook else None
     filename = f"{uuid.uuid4().hex}.mp4"
     dst = os.path.join(CLIP_DIR, filename)
     crop = detect_crop(src_path)
@@ -612,7 +619,8 @@ def render_clip(src_path, slug, platform, hook=""):
               f"[bg][blk]overlay=(W-w)/2:(H-h)/2{last}")
     cmd = [_ffmpeg_exe(), "-y", "-i", src_path, "-i", bar]
     if hook_png:
-        fc += f";[vb][2:v]overlay=0:0:enable='lt(t,{HOOK_SECONDS})'[v]"
+        window = HOOK_SECONDS if hook_seconds is None else hook_seconds
+        fc += (f";[vb][2:v]overlay=0:0:enable='lt(t,{window})'[v]" if window else ";[vb][2:v]overlay=0:0[v]")
         cmd += ["-i", hook_png]
     cmd += ["-filter_complex", fc,
             "-map", "[v]", "-map", "0:a?", "-s", f"{OUT_W}x{OUT_H}", "-threads", "1",
@@ -668,9 +676,11 @@ def valid_clip_url(url):
     """Strict check: https, host is exactly twitch.tv / kick.com (or their clips/www/m subdomains)."""
     return bool(url) and len(url) <= 300 and bool(CLIP_URL_RE.match(url))
 
-def process_clip(url, channel_override=None, hint="", caption_override=None, delay=(3, 3), hook=None):
+def process_clip(url, channel_override=None, hint="", caption_override=None, delay=(3, 3), hook=None, variants=None):
     """Download, brand, caption and post one clip to all active pages.
     hook: None = AI-written on-screen hook, "" = no hook, any other text = use it.
+    variants: [{"page_ids": [..], "text": overlay text for the whole clip, "caption": ...}] renders one
+    video per variant and posts each only to its own pages.
     Raises on download/render failure. Returns the per-page results list."""
     src = out = None
     try:
@@ -682,6 +692,21 @@ def process_clip(url, channel_override=None, hint="", caption_override=None, del
         channel = channel_override or slug
         title = info.get("title") or "Clip"
         handle_tag = f"{channel} on {platform.capitalize()}"
+        if variants:
+            results = []
+            base_url = os.environ.get("BASE_URL", "https://fan-page-manager.onrender.com")
+            for i, v in enumerate(variants):
+                print(f"[clip] variant {i + 1}/{len(variants)} for pages {v['page_ids']}")
+                fname = render_clip(src, slug, platform, clean_hook(v.get("text", "")),
+                                    hook_top=230, hook_size=62, hook_seconds=0)
+                vout = os.path.join(CLIP_DIR, fname)
+                try:
+                    results += _post_to_all_pages(f"{base_url}/clip-video/{fname}", v["caption"], "VIDEO",
+                                                  delay=delay, group="clipper", page_ids=v["page_ids"])
+                finally:
+                    if os.path.exists(vout):
+                        os.remove(vout)
+            return results
         print(f"[clip] rendering as {slug}/{platform}")
         hook_text = generate_clip_hook(title, channel, hint) if hook is None else clean_hook(hook)
         print(f"[clip] hook: {hook_text!r}")
@@ -1082,10 +1107,17 @@ h1{font-size:20px}.tabs{display:flex;gap:8px;margin:12px 0;flex-wrap:wrap}
 .tabs button{padding:7px 14px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
 .tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 .item{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:10px 0}
+.item input,.item textarea,.item select{width:100%;margin:4px 0;padding:8px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--fg);font:inherit}details{margin:12px 0}summary{cursor:pointer;font-weight:600}
 .item a{color:var(--accent);word-break:break-all}.meta{color:var(--muted);font-size:13px;margin-top:4px}
 .row{display:flex;gap:8px;margin-top:10px}.row button{padding:8px 16px;border-radius:8px;border:0;cursor:pointer;font-weight:600;color:#fff}
 .yes{background:#16a34a}.no{background:#dc2626}.empty{color:var(--muted);padding:20px 0}
 </style></head><body><h1>Clip queue</h1>
+<details><summary>New custom post</summary><div class="item">
+<input id="cpurl" placeholder="Clip link (Twitch or Kick)" autocomplete="off">
+<input id="cpfoot" placeholder="Caption footer, e.g. @nathanielonline" autocomplete="off">
+<div id="cprows"></div>
+<div class="row"><button class="no" style="background:#6b6a78" id="cpadd">+ Add variant</button><button class="yes" id="cpgo">Queue post</button></div>
+<div class="meta" id="cpmsg"></div></div></details>
 <div class="tabs" id="tabs"></div><div id="list"></div>
 <script>
 let key=localStorage.getItem('adminKey')||'';let st='pending';
@@ -1112,6 +1144,18 @@ async function load(){
   list.append(d)}
 }
 async function act(id,a){await fetch('/admin/submissions/'+id+'/'+a,{method:'POST',headers:hdr()});load()}
+let pagesList=[];
+fetch('/pages').then(r=>r.json()).then(j=>{pagesList=(j.pages||[]).filter(p=>p.page_group==='clipper');addRow();addRow()});
+function addRow(){const d=document.createElement('div');d.className='cprow';
+ const sel=document.createElement('select');for(const p of pagesList){const o=document.createElement('option');o.value=p.id;o.textContent=p.page_name;sel.append(o)}
+ const t=document.createElement('textarea');t.placeholder='Overlay text shown on the video';t.rows=2;
+ const c=document.createElement('textarea');c.placeholder='Instagram caption (optional, defaults to the overlay text)';c.rows=2;
+ d.append(sel,t,c);document.getElementById('cprows').append(d)}
+document.getElementById('cpadd').onclick=addRow;
+document.getElementById('cpgo').onclick=async()=>{const m=document.getElementById('cpmsg');m.textContent='Queueing...';
+ const variants=[...document.querySelectorAll('.cprow')].map(d=>({page_id:d.querySelector('select').value,text:d.querySelectorAll('textarea')[0].value,caption:d.querySelectorAll('textarea')[1].value})).filter(v=>v.text.trim());
+ const r=await fetch('/admin/submissions/create',{method:'POST',headers:{...hdr(),'Content-Type':'application/json'},body:JSON.stringify({url:document.getElementById('cpurl').value,footer:document.getElementById('cpfoot').value,variants})});
+ const j=await r.json();m.textContent=r.ok?'Queued as #'+j.id+' - it posts automatically. Check the "approved" and "posted" tabs.':(j.error||'Something went wrong');if(r.ok){st='approved';load()}};
 load();
 </script></body></html>"""
 
@@ -1180,6 +1224,47 @@ def admin_list_submissions():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/admin/submissions/create", methods=["POST"])
+def admin_create_submission():
+    """Queue an already-approved custom post.
+    Body: { "url", "footer": "text added under every caption",
+            "variants": [ {"page_id": <fan_pages.id>, "text": "overlay text", "caption": "optional"} ] }"""
+    denied = _admin_guard()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    footer = (data.get("footer") or "").strip()[:200]
+    if not valid_clip_url(url):
+        return jsonify({"error": "paste a Twitch or Kick clip link"}), 400
+    variants = []
+    for v in (data.get("variants") or [])[:10]:
+        try:
+            pid = int(v.get("page_id"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "each variant needs a page"}), 400
+        text = (v.get("text") or "").strip()[:140]
+        if not text:
+            return jsonify({"error": "each variant needs overlay text"}), 400
+        caption = (v.get("caption") or "").strip()[:1800] or text
+        if footer:
+            caption += "\n\n" + footer
+        variants.append({"page_ids": [pid], "text": text, "caption": caption})
+    if not variants:
+        return jsonify({"error": "add at least one variant"}), 400
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO clip_submissions (url, submitter_name, status, decided_at, variants)
+                       VALUES (%s, 'admin', 'approved', NOW(), %s) RETURNING id""", (url, json.dumps(variants)))
+        new_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"id": new_id, "status": "approved", "variants": len(variants)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/admin/submissions/<int:sub_id>/<action>", methods=["POST"])
 def admin_decide_submission(sub_id, action):
     denied = _admin_guard()
@@ -1228,7 +1313,7 @@ def _clip_queue_loop():
                 UPDATE clip_submissions SET status='posting'
                 WHERE id = (SELECT id FROM clip_submissions WHERE status='approved'
                             ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
-                RETURNING id, url""")
+                RETURNING id, url, variants""")
             job = cur.fetchone()
             conn.commit()
             cur.close()
@@ -1243,7 +1328,8 @@ def _clip_queue_loop():
         status, error = "posted", None
         try:
             # 30-90s between pages so ten accounts don't all publish the same video at once
-            results = process_clip(job["url"], delay=(30, 90))
+            results = process_clip(job["url"], delay=(30, 90),
+                                   variants=json.loads(job["variants"]) if job.get("variants") else None)
             ok = [r for r in results if not r[2]]
             if not results:
                 status, error = "failed", "no active pages to post to"
