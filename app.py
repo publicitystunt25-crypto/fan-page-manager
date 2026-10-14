@@ -1417,20 +1417,32 @@ def _fetch_pages(user_token):
     return list(found.values()), err
 
 def _page_ig(p, user_token):
-    """The Instagram account for a page. Pages linked via Business Settings report it as
-    connected_instagram_account instead of instagram_business_account, so check both, then ask the
-    page directly. Returns {} when none is linked."""
+    """Instagram account for a page -> (ig dict or {}, note). Tries the fields on the page object, then
+    asks the page directly (instagram_business_account / connected_instagram_account), then the
+    page's instagram_accounts edge. `note` carries Facebook's error text when nothing is found."""
     ig = p.get("instagram_business_account") or p.get("connected_instagram_account")
     if ig and ig.get("id"):
-        return ig
-    try:
-        d = requests.get(f"{GRAPH}/{p['id']}",
-                         params={"fields": "instagram_business_account{id,username},connected_instagram_account{id,username}",
-                                 "access_token": p.get("access_token") or user_token}, timeout=20).json()
-        return d.get("instagram_business_account") or d.get("connected_instagram_account") or {}
-    except Exception as e:
-        print(f"[page-ig] {type(e).__name__}")
-        return {}
+        return ig, ""
+    note = ""
+    tok = p.get("access_token") or user_token
+    for path, params in (
+        (p["id"], {"fields": "instagram_business_account{id,username},connected_instagram_account{id,username}"}),
+        (f"{p['id']}/instagram_accounts", {"fields": "id,username"}),
+    ):
+        try:
+            d = requests.get(f"{GRAPH}/{path}", params={**params, "access_token": tok}, timeout=20).json()
+        except Exception as e:
+            print(f"[page-ig] {type(e).__name__}")
+            continue
+        if d.get("error"):
+            note = d["error"].get("message", "")[:160]
+            continue
+        found = d.get("instagram_business_account") or d.get("connected_instagram_account")
+        if not found and d.get("data"):
+            found = d["data"][0]
+        if found and found.get("id"):
+            return found, ""
+    return {}, note or "Facebook reports no Instagram account on this page"
 
 def _preview_pages(user_token):
     """Nothing is saved: list the pages so the admin can pick which ones to add."""
@@ -1445,9 +1457,9 @@ def _preview_pages(user_token):
     conn.close()
     out = []
     for p in pages:
-        ig = _page_ig(p, user_token)
+        ig, note = _page_ig(p, user_token)
         out.append({"id": p["id"], "name": p.get("name", p["id"]), "ig": ig.get("username") or ig.get("id"),
-                    "has_ig": bool(ig.get("id")), "group": existing.get(p["id"])})
+                    "has_ig": bool(ig.get("id")), "group": existing.get(p["id"]), "note": note})
     return out, err
 
 def _connect_with_token(short_token, group, only, exchange=True):
@@ -1469,7 +1481,7 @@ def _connect_with_token(short_token, group, only, exchange=True):
         if p["id"] not in wanted:
             continue
         name, token = p.get("name", p["id"]), p.get("access_token")
-        ig = _page_ig(p, user_token)
+        ig, _note = _page_ig(p, user_token)
         if not ig.get("id"):
             lines.append(f"{name}: skipped - no Instagram account linked to this Facebook Page")
             continue
@@ -1563,7 +1575,7 @@ if(!j.pages.length){say('err','No pages found for this token.');find.disabled=fa
 const boxes=[];for(const p of j.pages){const row=document.createElement('label');row.className='pg';
 const cb=document.createElement('input');cb.type='checkbox';cb.disabled=!p.has_ig;cb.value=p.id;boxes.push(cb);
 const t=document.createElement('span');t.textContent=p.name+' ';const s=document.createElement('small');
-s.textContent=!p.has_ig?'(no Instagram linked)':'@'+p.ig+(p.group?' - already added as '+p.group:'');t.append(s);row.append(cb,t);o.append(row)}
+s.textContent=!p.has_ig?'(no Instagram linked'+(p.note?': '+p.note:'')+')':'@'+p.ig+(p.group?' - already added as '+p.group:'');t.append(s);row.append(cb,t);o.append(row)}
 const add=document.createElement('button');add.textContent='Add selected pages';
 add.onclick=async()=>{const ids=boxes.filter(b=>b.checked).map(b=>b.value);if(!ids.length){alert('Tick at least one page.');return}
 add.disabled=true;const k=await post({...base(),only:ids});o.replaceChildren();say(k.ok?'ok':'err',k.title||k.error||'Something went wrong.');
