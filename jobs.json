@@ -247,5 +247,32 @@
         ]
       }
     }
+  },
+  {
+    "id": "mia_flex_collab_20261014",
+    "render": "remote",
+    "url": "https://kick.com/therealmiasnow/clips/clip_01KY3VXNB40N1FJ4YPS630XRSY",
+    "footer": "@dom2timez @therealmiasnow",
+    "variants": [
+      {
+        "page_ids": [
+          19
+        ],
+        "text": "Mia Snow flexes on Dom2Timez",
+        "crop": 0.93,
+        "crop_x": 0.45,
+        "crop_y": 0.4,
+        "strip_pos": "top",
+        "trim_start": 1.0,
+        "tone": {
+          "brightness": 0.01,
+          "contrast": 1.05,
+          "saturation": 1.02
+        },
+        "collaborators": [
+          "therealmiasnow"
+        ]
+      }
+    ]
   }
 ]
