@@ -99,7 +99,8 @@ def render_one(args):
         src, slug, platform, cr.clean_hook(v.get("text", "")),
         hook_top=230, hook_size=62, hook_seconds=0,
         crop_factor=v.get("crop", 1.0), crop_x=v.get("crop_x", 0.5), crop_y=v.get("crop_y", 0.5),
-        strip_lift=v.get("strip_lift"), strip_pos=v.get("strip_pos", "bottom"))
+        strip_lift=v.get("strip_lift"), strip_pos=v.get("strip_pos", "bottom"),
+        trim_start=v.get("trim_start", 0.0), tone=v.get("tone"))
     return os.path.join(cr.CLIP_DIR, name)
 
 
@@ -124,7 +125,9 @@ def process_job(job, store, public_base, workers):
         text = (v.get("text") or "").strip()
         caption = (v.get("caption") or text).strip() + (f"\n\n{footer}" if footer else "")
         items.append({"page_ids": [int(p) for p in v["page_ids"]], "caption": caption,
-                      "url": f"{public_base}/{key}"})
+                      "url": f"{public_base}/{key}",
+                      "tags": [str(t).lstrip("@") for t in v.get("tags", [])][:20],
+                      "collaborators": [str(c).lstrip("@") for c in v.get("collaborators", [])][:3]})
         os.remove(path)
         print(f"[render] {jid}: uploaded variant {i + 1}/{len(variants)}", flush=True)
     os.remove(src)

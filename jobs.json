@@ -165,5 +165,32 @@
         "strip_pos": "bottom"
       }
     ]
+  },
+  {
+    "id": "mia_flex_tag_20261014",
+    "render": "remote",
+    "url": "https://kick.com/therealmiasnow/clips/clip_01KY3VXNB40N1FJ4YPS630XRSY",
+    "footer": "@dom2timez @therealmiasnow",
+    "variants": [
+      {
+        "page_ids": [
+          19
+        ],
+        "text": "Dom2Timez gets flexed on by Mia Snow",
+        "crop": 0.95,
+        "crop_x": 0.5,
+        "crop_y": 0.35,
+        "strip_pos": "bottom",
+        "trim_start": 0.5,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.03,
+          "saturation": 1.05
+        },
+        "tags": [
+          "therealmiasnow"
+        ]
+      }
+    ]
   }
 ]

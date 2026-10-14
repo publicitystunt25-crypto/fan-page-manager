@@ -125,45 +125,135 @@ def get_ig_for_page(page_access_token, fb_page_id):
     data = r.json()
     return data.get("instagram_business_account", {}).get("id")
 
-def post_to_ig(ig_account_id, page_token, media_url, caption, media_type="IMAGE", graph=None):
-    """Post a photo or video to one IG account."""
+def ig_create_container(ig_account_id, token, media_url, caption, media_type="IMAGE", graph=None):
+    """Step 1: hand the media to Instagram. Returns (creation_id, error)."""
     g = graph or GRAPH
     if media_type == "VIDEO":
-        payload = {"video_url": media_url, "media_type": "REELS", "caption": caption,
-                   "access_token": page_token}
+        payload = {"video_url": media_url, "media_type": "REELS", "caption": caption, "access_token": token}
     else:
-        payload = {"image_url": media_url, "caption": caption, "access_token": page_token}
-
-    r = requests.post(f"{g}/{ig_account_id}/media", data=payload, timeout=30)
-    result = r.json()
+        payload = {"image_url": media_url, "caption": caption, "access_token": token}
+    result = requests.post(f"{g}/{ig_account_id}/media", data=payload, timeout=30).json()
     creation_id = result.get("id")
     if not creation_id:
         return None, result.get("error", {}).get("message", str(result))
+    return creation_id, None
 
-    # IG processes the container asynchronously; publishing early gives "Media ID is not available"
+def ig_create_container_tagged(ig_account_id, token, media_url, caption, media_type="IMAGE", graph=None,
+                               tags=None, collaborators=None):
+    """Like ig_create_container, but also tags users and/or invites collaborators. If Instagram rejects the
+    tags (for example Reels may not accept them), retry without them. Returns (creation_id, error, note)."""
+    g = graph or GRAPH
+    if not (tags or collaborators):
+        cid, err = ig_create_container(ig_account_id, token, media_url, caption, media_type, graph)
+        return cid, err, ""
+    if media_type == "VIDEO":
+        payload = {"video_url": media_url, "media_type": "REELS", "caption": caption, "access_token": token}
+    else:
+        payload = {"image_url": media_url, "caption": caption, "access_token": token}
+    if tags:
+        payload["user_tags"] = json.dumps([{"username": str(u).lstrip("@"), "x": 0.5, "y": 0.5} for u in tags])
+    if collaborators:
+        payload["collaborators"] = json.dumps([str(u).lstrip("@") for u in collaborators])
+    result = requests.post(f"{g}/{ig_account_id}/media", data=payload, timeout=30).json()
+    if result.get("id"):
+        return result["id"], None, "tags/collaborators attached"
+    first_err = result.get("error", {}).get("message", str(result))
+    cid, err = ig_create_container(ig_account_id, token, media_url, caption, media_type, graph)
+    note = f"posted WITHOUT tags: {first_err[:140]}" if cid else ""
+    return cid, err, note
+
+def ig_wait_ready(creation_id, token, media_type="IMAGE", graph=None):
+    """Step 2: Instagram processes the media asynchronously; publishing early gives 'Media ID is not available'.
+    Returns an error string, or None when it is ready."""
+    g = graph or GRAPH
     deadline = time.time() + (180 if media_type == "VIDEO" else 45)
     while time.time() < deadline:
-        s = requests.get(f"{g}/{creation_id}",
-                         params={"fields": "status_code", "access_token": page_token},
-                         timeout=15).json()
-        status = s.get("status_code")
-        if status == "FINISHED":
-            break
-        if status in ("ERROR", "EXPIRED"):
-            return None, f"media processing {status}"
+        st = requests.get(f"{g}/{creation_id}", params={"fields": "status_code", "access_token": token},
+                          timeout=15).json().get("status_code")
+        if st == "FINISHED":
+            return None
+        if st in ("ERROR", "EXPIRED"):
+            return f"media processing {st}"
         time.sleep(3)
-    else:
-        return None, "media processing timed out"
+    return "media processing timed out"
 
+def ig_publish(ig_account_id, token, creation_id, graph=None):
+    """Step 3: publish the processed media. Returns (post_id, error)."""
+    g = graph or GRAPH
     pub = requests.post(f"{g}/{ig_account_id}/media_publish",
-                        data={"creation_id": creation_id, "access_token": page_token},
-                        timeout=30)
-    pub_result = pub.json()
-    post_id = pub_result.get("id")
+                        data={"creation_id": creation_id, "access_token": token}, timeout=30).json()
+    post_id = pub.get("id")
     if not post_id:
-        return None, pub_result.get("error", {}).get("message", str(pub_result))
-
+        return None, pub.get("error", {}).get("message", str(pub))
     return post_id, None
+
+def post_to_ig(ig_account_id, page_token, media_url, caption, media_type="IMAGE", graph=None):
+    """Post a photo or video to one IG account (create, wait, publish)."""
+    creation_id, err = ig_create_container(ig_account_id, page_token, media_url, caption, media_type, graph)
+    if err:
+        return None, err
+    err = ig_wait_ready(creation_id, page_token, media_type, graph)
+    if err:
+        return None, err
+    return ig_publish(ig_account_id, page_token, creation_id, graph)
+
+def _log_post(page_id, post_id, caption, media_url, err):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO post_log (fan_page_id, ig_post_id, caption, media_url, error)
+                   VALUES (%s, %s, %s, %s, %s)""", (page_id, post_id, caption, media_url, err))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+PUBLISH_GAP = (30, 60)   # seconds between publishes: close together, but never in the same minute
+
+def _post_pipelined(items, gap=PUBLISH_GAP):
+    """items: [{"page_ids": [..], "caption", "url"}]. All videos are handed to Instagram at once so they
+    process in parallel, then published one at a time with a random gap. Returns [(page_name, post_id, error)]."""
+    from concurrent.futures import ThreadPoolExecutor
+    wanted = sorted({int(p) for it in items for p in it["page_ids"]})
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""SELECT id, ig_account_id, page_access_token, page_name, auth_type FROM fan_pages
+                   WHERE active=TRUE AND ig_account_id IS NOT NULL AND page_group='clipper' AND id = ANY(%s)""", (wanted,))
+    pages = {r["id"]: r for r in cur.fetchall()}
+    cur.close()
+    conn.close()
+
+    tasks = []   # (page row, item) in the order the items were listed
+    for it in items:
+        for pid in it["page_ids"]:
+            if int(pid) in pages:
+                tasks.append((pages[int(pid)], it))
+
+    def prepare(task):
+        page, it = task
+        g = _graph_for(page.get("auth_type"))
+        cid, err, note = ig_create_container_tagged(page["ig_account_id"], page["page_access_token"], it["url"],
+                                                    it["caption"], "VIDEO", g, it.get("tags"), it.get("collaborators"))
+        if err:
+            return None, err, note
+        return cid, ig_wait_ready(cid, page["page_access_token"], "VIDEO", g), note
+
+    with ThreadPoolExecutor(max_workers=max(1, min(6, len(tasks)))) as pool:
+        prepared = list(pool.map(prepare, tasks))
+
+    results = []
+    for n, ((page, it), (cid, err, note)) in enumerate(zip(tasks, prepared)):
+        post_id = None
+        if not err:
+            if n:
+                time.sleep(random.uniform(*gap))
+            post_id, err = ig_publish(page["ig_account_id"], page["page_access_token"], cid, _graph_for(page.get("auth_type")))
+        try:
+            _log_post(page["id"], post_id, it["caption"], it["url"], err)
+        except Exception as e:
+            print(f"[post] could not log: {type(e).__name__}")
+        shown = f"{post_id} ({note})" if (post_id and note) else post_id
+        results.append((page["page_name"], shown, err))
+        print(f"[post] {page['page_name']}: {'posted ' + str(shown) if not err else 'error ' + str(err)}")
+    return results
 
 def upload_to_imgbb(image_path):
     """Upload image to imgbb and return public URL."""
@@ -1768,13 +1858,7 @@ def _run_remote_job(job, delay=(30, 90), wait_hours=3):
     # past this point a restart must never re-post; the claim is atomic so overlapping copies can't both post
     if not _claim_setting(f"job_{job['id']}_posting"):
         return "skipped: another process is already posting this job"
-    results = []
-    for i, item in enumerate(manifest.get("items", [])):
-        if i:
-            time.sleep(random.uniform(*delay))
-        results += _post_to_all_pages(item["url"], item["caption"], "VIDEO", delay=delay,
-                                      group="clipper", page_ids=item["page_ids"])
-    return _summarize(results)
+    return _summarize(_post_pipelined(manifest.get("items", [])))
 
 def _jobs_worker(jobs):
     for job in jobs:

@@ -151,7 +151,8 @@ def make_hook_overlay(text, top=None, max_size=92):
     return path
 
 def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, hook_seconds=None,
-                crop_factor=1.0, crop_x=0.5, crop_y=0.5, strip_lift=None, strip_pos="bottom"):
+                crop_factor=1.0, crop_x=0.5, crop_y=0.5, strip_lift=None, strip_pos="bottom",
+                trim_start=0.0, tone=None):
     """1080x1920 output with a branded bar. Portrait picture fills the frame (bar overlaid above the
     caption area); landscape picture is centered over a blurred copy with the bar attached underneath.
     If `hook` is given it is shown as text over the first HOOK_SECONDS seconds."""
@@ -164,6 +165,11 @@ def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, 
     if crop_factor < 1.0:   # slight extra crop; crop_x / crop_y (0..1) shift where it is taken from
         f = max(0.8, float(crop_factor))
         pre += f"crop=iw*{f}:ih*{f}:(iw-iw*{f})*{float(crop_x)}:(ih-ih*{f})*{float(crop_y)},"
+    if tone:   # slight colour difference between versions, e.g. {"brightness": 0.03, "contrast": 1.04, "saturation": 1.06}
+        b = max(-0.1, min(0.1, float(tone.get("brightness", 0))))
+        c = max(0.9, min(1.1, float(tone.get("contrast", 1))))
+        sat = max(0.8, min(1.2, float(tone.get("saturation", 1))))
+        pre += f"eq=brightness={b}:contrast={c}:saturation={sat},"
     lift = BAR_LIFT if strip_lift is None else int(strip_lift)
     portrait = False
     if crop:
@@ -181,7 +187,10 @@ def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, 
                  f"[b]scale=1080:-2,pad=1080:ih+{BAR_H}:0:0:black[blk0];"
                  f"[blk0][1:v]overlay=0:H-{BAR_H}[blk];") +
               f"[bg][blk]overlay=(W-w)/2:(H-h)/2{last}")
-    cmd = [_ffmpeg_exe(), "-y", "-i", src_path, "-i", bar]
+    cmd = [_ffmpeg_exe(), "-y"]
+    if trim_start and float(trim_start) > 0:   # start a little later, so the file differs from the other versions
+        cmd += ["-ss", str(min(float(trim_start), 3.0))]
+    cmd += ["-i", src_path, "-i", bar]
     if hook_png:
         window = HOOK_SECONDS if hook_seconds is None else hook_seconds
         fc += (f";[vb][2:v]overlay=0:0:enable='lt(t,{window})'[v]" if window else ";[vb][2:v]overlay=0:0[v]")
