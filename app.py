@@ -1424,7 +1424,17 @@ def _page_ig(p, user_token):
     if ig and ig.get("id"):
         return ig, ""
     note = ""
-    tok = p.get("access_token") or user_token
+    tok = p.get("access_token")
+    if not tok:   # business-owned pages come back without a token; fetch the page's own token first
+        try:
+            d = requests.get(f"{GRAPH}/{p['id']}", params={"fields": "access_token", "access_token": user_token},
+                             timeout=20).json()
+            tok = d.get("access_token")
+            if not tok and d.get("error"):
+                note = "no page token: " + d["error"].get("message", "")[:300]
+        except Exception as e:
+            print(f"[page-ig] {type(e).__name__}")
+    tok = tok or user_token
     for path, params in (
         (p["id"], {"fields": "instagram_business_account{id,username},connected_instagram_account{id,username}"}),
         (f"{p['id']}/instagram_accounts", {"fields": "id,username"}),
@@ -1435,7 +1445,7 @@ def _page_ig(p, user_token):
             print(f"[page-ig] {type(e).__name__}")
             continue
         if d.get("error"):
-            note = d["error"].get("message", "")[:160]
+            note = d["error"].get("message", "")[:400]
             continue
         found = d.get("instagram_business_account") or d.get("connected_instagram_account")
         if not found and d.get("data"):
