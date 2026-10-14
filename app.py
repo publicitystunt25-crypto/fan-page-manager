@@ -1885,6 +1885,43 @@ def _jobs_worker(jobs):
         except Exception as e:
             print(f"[jobs] could not store result: {type(e).__name__}")
 
+def _probe_worker(job):
+    """Ask Instagram to prepare a video with different tag formats and NEVER publish it, to learn which
+    format it accepts. Unpublished containers are invisible on the profile and expire on their own."""
+    p = job["probe"]
+    out = []
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT ig_account_id, page_access_token, auth_type FROM fan_pages WHERE id=%s", (int(p["page_id"]),))
+        page = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not page:
+            raise RuntimeError("page not found")
+        g = _graph_for(page.get("auth_type"))
+        user = str(p["username"]).lstrip("@")
+        base = {"video_url": p["media_url"], "media_type": "REELS", "caption": "probe - never published",
+                "access_token": page["page_access_token"]}
+        tests = [
+            ("user_tags with x,y", {"user_tags": json.dumps([{"username": user, "x": 0.5, "y": 0.5}])}),
+            ("user_tags username only", {"user_tags": json.dumps([{"username": user}])}),
+            ("user_tags plain list", {"user_tags": json.dumps([user])}),
+            ("collaborators", {"collaborators": json.dumps([user])}),
+            ("control, no tags", {}),
+        ]
+        for label, extra in tests:
+            r = requests.post(f"{g}/{page['ig_account_id']}/media", data={**base, **extra}, timeout=30).json()
+            out.append(f"{label}: " + ("ACCEPTED" if r.get("id") else (r.get("error") or {}).get("message", str(r))[:130]))
+        summary = " | ".join(out)
+    except Exception as e:
+        summary = f"failed: {type(e).__name__}"
+    print(f"[probe] {job['id']}: {summary}")
+    try:
+        _set_setting(f"job_{job['id']}_result", summary)
+    except Exception as e:
+        print(f"[probe] could not store result: {type(e).__name__}")
+
 def _run_jobs_once():
     """Claim every job in jobs.json that has never started (the INSERT only succeeds once per id)."""
     try:
@@ -1900,6 +1937,12 @@ def _run_jobs_once():
         conn = get_conn()
         cur = conn.cursor()
         for job in jobs:
+            if isinstance(job.get("probe"), dict) and isinstance(job.get("id"), str):
+                cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
+                               ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
+                if cur.fetchone():
+                    threading.Thread(target=_probe_worker, args=(job,), daemon=True).start()
+                continue
             if not (isinstance(job.get("id"), str) and valid_clip_url(job.get("url", "")) and job.get("variants")):
                 print(f"[jobs] skipping malformed job {job.get('id')!r}")
                 continue
