@@ -1392,7 +1392,7 @@ def connect_start():
 
 PAGE_FIELDS = "id,name,access_token,instagram_business_account{id,username},connected_instagram_account{id,username}"
 
-def _fetch_pages(user_token):
+def _fetch_pages(user_token, extra_ids=()):
     """Pages the token can see: /me/accounts plus pages owned by or shared with the user's Business
     accounts (business pages are not in /me/accounts). Returns (pages, error_message)."""
     found, err = {}, ""
@@ -1414,6 +1414,16 @@ def _fetch_pages(user_token):
                     found.setdefault(p["id"], p)
     except Exception as e:
         print(f"[fetch-pages] business lookup: {type(e).__name__}")
+    for pid in extra_ids:   # pages entered by id: fetch directly, no list needed
+        if pid in found:
+            continue
+        for fields in (PAGE_FIELDS, "id,name,access_token"):
+            d = requests.get(f"{GRAPH}/{pid}", params={"fields": fields, "access_token": user_token},
+                             timeout=30).json()
+            if d.get("id"):
+                found[pid] = d
+                break
+            err = d.get("error", {}).get("message", err)
     return list(found.values()), err
 
 def _page_ig(p, user_token):
@@ -1454,9 +1464,9 @@ def _page_ig(p, user_token):
             return found, ""
     return {}, note or "Facebook reports no Instagram account on this page"
 
-def _preview_pages(user_token):
+def _preview_pages(user_token, extra_ids=()):
     """Nothing is saved: list the pages so the admin can pick which ones to add."""
-    pages, err = _fetch_pages(user_token)
+    pages, err = _fetch_pages(user_token, extra_ids)
     existing = {}
     conn = get_conn()
     cur = conn.cursor()
@@ -1472,7 +1482,7 @@ def _preview_pages(user_token):
                     "has_ig": bool(ig.get("id")), "group": existing.get(p["id"]), "note": note})
     return out, err
 
-def _connect_with_token(short_token, group, only, exchange=True):
+def _connect_with_token(short_token, group, only, exchange=True, extra_ids=()):
     """Exchange a user token for a long-lived one (skipped for system user / saved tokens), save it,
     then add or refresh ONLY the pages whose ids are in `only`. Returns (ok, title, lines)."""
     base = {"client_id": FB_APP_ID, "client_secret": FB_APP_SECRET}
@@ -1484,7 +1494,7 @@ def _connect_with_token(short_token, group, only, exchange=True):
         return False, "Token exchange failed", [long_.get("error", {}).get("message", "no token returned")]
     _save_user_token(user_token)
 
-    pages, err = _fetch_pages(user_token)   # re-read with the long-lived token: its page tokens never expire
+    pages, err = _fetch_pages(user_token, extra_ids)   # re-read with the long-lived token: its page tokens never expire
     wanted = set(only)
     lines, added = [], 0
     for p in pages:
@@ -1569,6 +1579,7 @@ button:disabled{opacity:.6}ul{padding-left:18px;font-size:14px}.ok{color:#16a34a
 <label for="g">New pages will post:</label>
 <select id="g"><option value="clipper">Clips (clipper pages)</option><option value="promo">Mia promo content</option></select>
 <label for="t">Access token (optional)</label><textarea id="t" autocomplete="off" spellcheck="false"></textarea>
+<label for="pid">Page ID (optional - adds that page directly if it is not listed)</label><input id="pid" inputmode="numeric" placeholder="e.g. 1424718177383290" autocomplete="off" style="width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--fg);font:inherit">
 <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="sys"> System user token (never expires)</label>
 <button id="find">Find pages</button><div id="o" role="status"></div></div>
 <script>
@@ -1577,7 +1588,7 @@ function say(cls,text){const h=document.createElement('p');h.className=cls;h.tex
 async function post(payload){let key=localStorage.getItem('adminKey')||'';if(!key){key=prompt('Enter admin key:')||'';localStorage.setItem('adminKey',key)}
 const r=await fetch('/connect/token',{method:'POST',headers:{'X-Admin-Key':key,'Content-Type':'application/json'},body:JSON.stringify(payload)});
 if(r.status===401)localStorage.removeItem('adminKey');return r.json()}
-function base(){return {token:document.getElementById('t').value.trim(),group:document.getElementById('g').value,system:document.getElementById('sys').checked}}
+function base(){const p=document.getElementById('pid').value.trim();return {token:document.getElementById('t').value.trim(),group:document.getElementById('g').value,system:document.getElementById('sys').checked,page_ids:p?[p]:[]}}
 find.onclick=async()=>{o.replaceChildren();find.disabled=true;
 try{const j=await post({...base(),preview:true});
 if(!j.pages){say('err',j.error||j.title||'Something went wrong.');find.disabled=false;return}
@@ -1612,20 +1623,21 @@ def connect_token_submit():
         return jsonify({"error": "choose a group"}), 400
     system = bool(data.get("system"))
     exchange = not system
+    extra_ids = [str(x).strip() for x in (data.get("page_ids") or []) if str(x).strip().isdigit()][:20]
     if not token:                       # reuse the token saved by an earlier connect
         token, exchange = get_user_token(), False
     if not token or len(token) < 20:
         return jsonify({"error": "paste an access token first"}), 400
     try:
         if data.get("preview"):
-            pages, err = _preview_pages(token)
+            pages, err = _preview_pages(token, extra_ids)
             if not pages:
                 return jsonify({"error": err or "No pages came back for this token."}), 400
             return jsonify({"pages": pages})
         only = data.get("only")
         if not isinstance(only, list) or not only:
             return jsonify({"error": "choose at least one page to add"}), 400
-        ok, title, lines = _connect_with_token(token, group, [str(i) for i in only], exchange=exchange)
+        ok, title, lines = _connect_with_token(token, group, [str(i) for i in only], exchange=exchange, extra_ids=extra_ids)
         return jsonify({"ok": ok, "title": title, "lines": lines}), (200 if ok else 400)
     except Exception as e:
         print(f"[connect-token] {type(e).__name__}")
