@@ -1925,6 +1925,62 @@ def _probe_worker(job):
     except Exception as e:
         print(f"[probe] could not store result: {type(e).__name__}")
 
+def _audit_worker(job):
+    """READ-ONLY. For each page, list the posts that were NOT published by the bot (not in post_log), so the owner
+    can decide what to delete. Also re-checks whether posts we already deleted are really gone.
+    job["audit"] = {"page_ids": [..], "check_ids": {"<fan_page_id>": ["<media id>", ...]}}"""
+    spec = job["audit"]
+    report = {"pages": {}, "deleted_check": {}}
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT ig_post_id FROM post_log WHERE ig_post_id IS NOT NULL")
+        bot_posts = {r["ig_post_id"] for r in cur.fetchall()}
+        cur.execute("SELECT id, page_name, ig_account_id, page_access_token, auth_type FROM fan_pages WHERE id = ANY(%s)",
+                    (sorted({int(p) for p in spec.get("page_ids", [])} | {int(p) for p in spec.get("check_ids", {})}),))
+        pages = {r["id"]: r for r in cur.fetchall()}
+        cur.close()
+        conn.close()
+        for pid in spec.get("page_ids", []):
+            page = pages.get(int(pid))
+            if not page:
+                continue
+            g = _graph_for(page.get("auth_type"))
+            url = f"{g}/{page['ig_account_id']}/media"
+            params = {"fields": "id,timestamp,caption,permalink,media_product_type", "limit": 50,
+                      "access_token": page["page_access_token"]}
+            rows, total, guard = [], 0, 0
+            while url and guard < 20:
+                r = requests.get(url, params=params, timeout=30).json()
+                guard += 1
+                if "data" not in r:
+                    rows.append({"error": (r.get("error") or {}).get("message", "no data")[:120]})
+                    break
+                for m in r["data"]:
+                    total += 1
+                    if m["id"] not in bot_posts:
+                        rows.append({"id": m["id"], "date": (m.get("timestamp") or "")[:10],
+                                     "type": m.get("media_product_type"), "caption": (m.get("caption") or "")[:50],
+                                     "link": m.get("permalink")})
+                url, params = (r.get("paging") or {}).get("next"), None
+            report["pages"][page["page_name"]] = {"id": int(pid), "total_posts": total, "not_from_bot": rows}
+        for pid, ids in (spec.get("check_ids") or {}).items():
+            page = pages.get(int(pid))
+            if not page:
+                continue
+            g = _graph_for(page.get("auth_type"))
+            for mid in ids:
+                r = requests.get(f"{g}/{mid}", params={"fields": "id", "access_token": page["page_access_token"]}, timeout=20).json()
+                report["deleted_check"][mid] = "STILL EXISTS" if r.get("id") else "gone: " + (r.get("error") or {}).get("message", "")[:80]
+        summary = json.dumps(report, ensure_ascii=False, separators=(",", ":"))
+    except Exception as e:
+        summary = json.dumps({"failed": type(e).__name__})
+    print(f"[audit] {job['id']}: {len(summary)} chars")
+    try:
+        _set_setting(f"job_{job['id']}_result", summary)
+    except Exception as e:
+        print(f"[audit] could not store result: {type(e).__name__}")
+
 def _run_jobs_once():
     """Claim every job in jobs.json that has never started (the INSERT only succeeds once per id)."""
     try:
@@ -1940,6 +1996,12 @@ def _run_jobs_once():
         conn = get_conn()
         cur = conn.cursor()
         for job in jobs:
+            if isinstance(job.get("audit"), dict) and isinstance(job.get("id"), str):
+                cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
+                               ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
+                if cur.fetchone():
+                    threading.Thread(target=_audit_worker, args=(job,), daemon=True).start()
+                continue
             if isinstance(job.get("probe"), dict) and isinstance(job.get("id"), str):
                 cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
                                ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
