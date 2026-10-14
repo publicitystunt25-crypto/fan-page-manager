@@ -151,7 +151,10 @@ def ig_create_container_tagged(ig_account_id, token, media_url, caption, media_t
     else:
         payload = {"image_url": media_url, "caption": caption, "access_token": token}
     if tags:
-        payload["user_tags"] = json.dumps([{"username": str(u).lstrip("@"), "x": 0.5, "y": 0.5} for u in tags])
+        if media_type == "VIDEO":   # Reels reject x/y coordinates (confirmed by a prepare-only probe); photos need them
+            payload["user_tags"] = json.dumps([{"username": str(u).lstrip("@")} for u in tags])
+        else:
+            payload["user_tags"] = json.dumps([{"username": str(u).lstrip("@"), "x": 0.5, "y": 0.5} for u in tags])
     if collaborators:
         payload["collaborators"] = json.dumps([str(u).lstrip("@") for u in collaborators])
     result = requests.post(f"{g}/{ig_account_id}/media", data=payload, timeout=30).json()
