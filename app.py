@@ -593,7 +593,8 @@ def make_hook_overlay(text, top=None, max_size=92):
     img.save(path)
     return path
 
-def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, hook_seconds=None):
+def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, hook_seconds=None,
+                crop_factor=1.0, crop_x=0.5, crop_y=0.5, strip_lift=None, strip_pos="bottom"):
     """1080x1920 output with a branded bar. Portrait picture fills the frame (bar overlaid above the
     caption area); landscape picture is centered over a blurred copy with the bar attached underneath.
     If `hook` is given it is shown as text over the first HOOK_SECONDS seconds."""
@@ -603,6 +604,10 @@ def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, 
     dst = os.path.join(CLIP_DIR, filename)
     crop = detect_crop(src_path)
     pre = f"crop={crop}," if crop else ""
+    if crop_factor < 1.0:   # slight extra crop; crop_x / crop_y (0..1) shift where it is taken from
+        f = max(0.8, float(crop_factor))
+        pre += f"crop=iw*{f}:ih*{f}:(iw-iw*{f})*{float(crop_x)}:(ih-ih*{f})*{float(crop_y)},"
+    lift = BAR_LIFT if strip_lift is None else int(strip_lift)
     portrait = False
     if crop:
         cw, ch = (int(v) for v in crop.split(":")[:2])
@@ -610,12 +615,14 @@ def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, 
     last = "[vb]" if hook_png else "[v]"
     if portrait:
         fc = (f"[0:v]{pre}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[base];"
-              f"[base][1:v]overlay=0:H-{BAR_H + BAR_LIFT}{last}")
+              f"[base][1:v]overlay=0:H-{BAR_H + lift}{last}")
     else:
-        fc = (f"[0:v]{pre}split[a][b];"
-              "[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=30:5[bg];"
-              f"[b]scale=1080:-2,pad=1080:ih+{BAR_H}:0:0:black[blk0];"
-              f"[blk0][1:v]overlay=0:H-{BAR_H}[blk];"
+        fc = (f"[0:v]{pre}scale='min(iw,1280)':-2,split[a][b];"
+              "[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=8:2,scale=1080:1920[bg];"
+              + (f"[b]scale=1080:-2,pad=1080:ih+{BAR_H}:0:{BAR_H}:black[blk0];"
+                 "[blk0][1:v]overlay=0:0[blk];" if strip_pos == "top" else
+                 f"[b]scale=1080:-2,pad=1080:ih+{BAR_H}:0:0:black[blk0];"
+                 f"[blk0][1:v]overlay=0:H-{BAR_H}[blk];") +
               f"[bg][blk]overlay=(W-w)/2:(H-h)/2{last}")
     cmd = [_ffmpeg_exe(), "-y", "-i", src_path, "-i", bar]
     if hook_png:
@@ -624,11 +631,11 @@ def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, 
         cmd += ["-i", hook_png]
     cmd += ["-filter_complex", fc,
             "-map", "[v]", "-map", "0:a?", "-s", f"{OUT_W}x{OUT_H}", "-threads", "1",
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-t", "90", dst]
     import subprocess
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
     finally:
         for p in (bar, hook_png):
             if p and os.path.exists(p):
@@ -700,7 +707,10 @@ def process_clip(url, channel_override=None, hint="", caption_override=None, del
                     time.sleep(random.uniform(*delay))
                 print(f"[clip] variant {i + 1}/{len(variants)} for pages {v['page_ids']}")
                 fname = render_clip(src, slug, platform, clean_hook(v.get("text", "")),
-                                    hook_top=230, hook_size=62, hook_seconds=0)
+                                    hook_top=230, hook_size=62, hook_seconds=0,
+                                    crop_factor=v.get("crop", 1.0), crop_x=v.get("crop_x", 0.5),
+                                    crop_y=v.get("crop_y", 0.5), strip_lift=v.get("strip_lift"),
+                                    strip_pos=v.get("strip_pos", "bottom"))
                 vout = os.path.join(CLIP_DIR, fname)
                 try:
                     results += _post_to_all_pages(f"{base_url}/clip-video/{fname}", v["caption"], "VIDEO",
@@ -1824,7 +1834,8 @@ def _jobs_worker(jobs):
             text = (v.get("text") or "").strip()
             caption = (v.get("caption") or text).strip()
             variants.append({"page_ids": [int(p) for p in v["page_ids"]], "text": text,
-                             "caption": caption + (f"\n\n{footer}" if footer else "")})
+                             "caption": caption + (f"\n\n{footer}" if footer else ""),
+                             **{k: v[k] for k in ("crop", "crop_x", "crop_y", "strip_lift", "strip_pos") if k in v}})
         try:
             results = process_clip(job["url"], delay=(30, 90), variants=variants)
             summary = "; ".join(f"{n}: {'posted ' + str(pid) if not err else 'ERROR ' + str(err)[:120]}"
