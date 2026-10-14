@@ -1802,10 +1802,98 @@ def data_deletion_page():
             "If you connected a page to this service, you can also remove access at any time in your Facebook settings under Business Integrations (or Apps and Websites) by removing this app. Doing so revokes our access token."]),
     ])
 
+# ── JOBS FILE (jobs.json in the repo: posts the owner has approved; each id runs once ever) ──────────
+
+JOBS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jobs.json")
+
+def _set_setting(key, value):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, %s)
+                   ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value""", (key, value))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def _jobs_worker(jobs):
+    for job in jobs:
+        key = f"job_{job['id']}"
+        footer = (job.get("footer") or "").strip()
+        variants = []
+        for v in job["variants"]:
+            text = (v.get("text") or "").strip()
+            caption = (v.get("caption") or text).strip()
+            variants.append({"page_ids": [int(p) for p in v["page_ids"]], "text": text,
+                             "caption": caption + (f"\n\n{footer}" if footer else "")})
+        try:
+            results = process_clip(job["url"], delay=(30, 90), variants=variants)
+            summary = "; ".join(f"{n}: {'posted ' + str(pid) if not err else 'ERROR ' + str(err)[:120]}"
+                                for n, pid, err in results) or "no pages posted"
+        except Exception as e:
+            summary = f"failed: {type(e).__name__}: {str(e)[:200]}"
+        print(f"[jobs] {job['id']}: {summary}")
+        try:
+            _set_setting(key + "_result", summary)
+        except Exception as e:
+            print(f"[jobs] could not store result: {type(e).__name__}")
+
+def _run_jobs_once():
+    """Claim every job in jobs.json that has never started (the INSERT only succeeds once per id)."""
+    try:
+        with open(JOBS_FILE, encoding="utf-8") as f:
+            jobs = json.load(f)
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        print(f"[jobs] could not read jobs.json: {type(e).__name__}")
+        return
+    todo = []
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        for job in jobs:
+            if not (isinstance(job.get("id"), str) and valid_clip_url(job.get("url", "")) and job.get("variants")):
+                print(f"[jobs] skipping malformed job {job.get('id')!r}")
+                continue
+            cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
+                           ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
+            if cur.fetchone():
+                todo.append(job)
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[jobs] {type(e).__name__}")
+        return
+    if todo:
+        print(f"[jobs] starting {[j['id'] for j in todo]}")
+        threading.Thread(target=_jobs_worker, args=(todo,), daemon=True).start()
+
+@app.route("/jobs-status", methods=["GET"])
+def jobs_status():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT key, value FROM app_settings WHERE key LIKE 'job\\_%' ORDER BY key")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        out = {}
+        for key, value in rows:
+            jid = key[4:]
+            if jid.endswith("_result"):
+                out.setdefault(jid[:-7], {})["result"] = value
+            else:
+                out.setdefault(jid, {})["state"] = value
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": type(e).__name__}), 500
+
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
 init_db()
 _recover_interrupted_clips()
+_run_jobs_once()
 threading.Thread(target=_analytics_loop, daemon=True).start()
 threading.Thread(target=_clip_queue_loop, daemon=True).start()
 threading.Thread(target=_quote_scheduler_loop, daemon=True).start()
