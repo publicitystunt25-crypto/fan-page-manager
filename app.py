@@ -16,7 +16,7 @@ app = Flask(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 USER_ACCESS_TOKEN = os.environ.get("FB_USER_TOKEN")
-GRAPH = "https://graph.facebook.com/v19.0"
+GRAPH = "https://graph.facebook.com/" + os.environ.get("FB_GRAPH_VERSION", "v23.0")
 
 PAGE_GROUPS = {"promo", "clipper"}
 
@@ -72,6 +72,25 @@ def init_db():
             posted_at TIMESTAMPTZ
         );
         ALTER TABLE clip_submissions ADD COLUMN IF NOT EXISTS variants TEXT;
+        ALTER TABLE fan_pages ADD COLUMN IF NOT EXISTS analytics_error TEXT;
+        ALTER TABLE fan_pages ADD COLUMN IF NOT EXISTS analytics_pulled_at TIMESTAMPTZ;
+        CREATE TABLE IF NOT EXISTS post_metrics (
+            ig_media_id TEXT PRIMARY KEY,
+            fan_page_id INTEGER REFERENCES fan_pages(id),
+            permalink TEXT,
+            media_type TEXT,
+            caption TEXT,
+            posted_at TIMESTAMPTZ,
+            views INTEGER DEFAULT 0,
+            reach INTEGER DEFAULT 0,
+            likes INTEGER DEFAULT 0,
+            comments INTEGER DEFAULT 0,
+            saves INTEGER DEFAULT 0,
+            shares INTEGER DEFAULT 0,
+            prev_views INTEGER,
+            prev_likes INTEGER,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
         CREATE TABLE IF NOT EXISTS analytics_snapshots (
             id SERIAL PRIMARY KEY,
             fan_page_id INTEGER REFERENCES fan_pages(id),
@@ -226,47 +245,103 @@ def _quote_scheduler_loop():
             print(f"[quote-scheduler] {e}")
         time.sleep(30)
 
-def _analytics_loop():
-    time.sleep(30)
-    while True:
-        try:
-            conn = get_conn()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute("SELECT id, ig_account_id, page_access_token FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL")
-            pages = cur.fetchall()
-            cur.close()
-            conn.close()
+_pull_lock = threading.Lock()
+# metric sets to try, richest first (availability differs by media type and account)
+INSIGHT_SETS = ("views,reach,saved,shares,total_interactions", "views,reach,saved", "reach,saved,shares", "reach,saved")
 
-            for page in pages:
-                try:
-                    r = requests.get(f"{GRAPH}/{page['ig_account_id']}/media",
-                                     params={"fields": "id,like_count,comments_count,insights.metric(impressions,reach,saved)",
-                                             "limit": 10, "access_token": page["page_access_token"]},
-                                     timeout=15)
-                    posts = r.json().get("data", [])
-                    for post in posts:
-                        insights = {i["name"]: i["values"][0]["value"]
-                                    for i in post.get("insights", {}).get("data", [])}
-                        conn2 = get_conn()
-                        cur2 = conn2.cursor()
-                        cur2.execute("""
-                            INSERT INTO analytics_snapshots
-                              (fan_page_id, ig_media_id, impressions, reach, likes, comments, saves)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        """, (page["id"], post["id"],
-                              insights.get("impressions", 0),
-                              insights.get("reach", 0),
-                              post.get("like_count", 0),
-                              post.get("comments_count", 0),
-                              insights.get("saved", 0)))
-                        conn2.commit()
-                        cur2.close()
-                        conn2.close()
-                    time.sleep(2)
-                except Exception as pe:
-                    print(f"[analytics] page {page['id']}: {pe}")
+def _media_insights(media_id, token):
+    """Latest insights for one post -> (dict, error message)."""
+    err = ""
+    for metrics in INSIGHT_SETS:
+        try:
+            r = requests.get(f"{GRAPH}/{media_id}/insights",
+                             params={"metric": metrics, "access_token": token}, timeout=20).json()
         except Exception as e:
-            print(f"[analytics-loop] {e}")
+            return {}, type(e).__name__
+        if "data" in r:
+            out = {}
+            for item in r["data"]:
+                vals = item.get("values") or [{}]
+                v = vals[0].get("value", (item.get("total_value") or {}).get("value"))
+                if isinstance(v, (int, float)):
+                    out[item["name"]] = int(v)
+            return out, ""
+        err = (r.get("error") or {}).get("message", "")[:200]
+    return {}, err
+
+def _pull_page_metrics(page):
+    """Refresh the latest numbers for a page's recent posts. Returns an error string ('' when fine)."""
+    r = requests.get(f"{GRAPH}/{page['ig_account_id']}/media",
+                     params={"fields": "id,caption,media_type,media_product_type,permalink,timestamp,like_count,comments_count",
+                             "limit": 25, "access_token": page["page_access_token"]}, timeout=30).json()
+    if "data" not in r:
+        return (r.get("error") or {}).get("message", "no data returned")[:300]
+    last_err = ""
+    conn = get_conn()
+    cur = conn.cursor()
+    for post in r["data"]:
+        ins, err = _media_insights(post["id"], page["page_access_token"])
+        last_err = err or last_err
+        cur.execute("""
+            INSERT INTO post_metrics (ig_media_id, fan_page_id, permalink, media_type, caption, posted_at,
+                                      views, reach, likes, comments, saves, shares)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (ig_media_id) DO UPDATE SET
+                prev_views = post_metrics.views, prev_likes = post_metrics.likes,
+                permalink = EXCLUDED.permalink, caption = EXCLUDED.caption,
+                views = EXCLUDED.views, reach = EXCLUDED.reach, likes = EXCLUDED.likes,
+                comments = EXCLUDED.comments, saves = EXCLUDED.saves, shares = EXCLUDED.shares,
+                updated_at = NOW()""",
+            (post["id"], page["id"], post.get("permalink"),
+             post.get("media_product_type") or post.get("media_type"), (post.get("caption") or "")[:300],
+             post.get("timestamp"), ins.get("views", 0), ins.get("reach", 0),
+             post.get("like_count", 0), post.get("comments_count", 0), ins.get("saved", 0), ins.get("shares", 0)))
+        time.sleep(0.2)
+    conn.commit()
+    cur.close()
+    conn.close()
+    if not r["data"]:
+        return "no posts yet"
+    return last_err
+
+def _pull_analytics_once():
+    """One pass over every active page. Skips if a pass is already running."""
+    if not _pull_lock.acquire(blocking=False):
+        return False
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, ig_account_id, page_access_token FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL")
+        pages = cur.fetchall()
+        cur.close()
+        conn.close()
+        for page in pages:
+            try:
+                err = _pull_page_metrics(page)
+            except Exception as e:
+                err = type(e).__name__
+                print(f"[analytics] page {page['id']}: {err}")
+            try:
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("UPDATE fan_pages SET analytics_error=%s, analytics_pulled_at=NOW() WHERE id=%s",
+                            (err or None, page["id"]))
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as e:
+                print(f"[analytics] status write: {type(e).__name__}")
+            time.sleep(1)
+    except Exception as e:
+        print(f"[analytics-loop] {type(e).__name__}")
+    finally:
+        _pull_lock.release()
+    return True
+
+def _analytics_loop():
+    time.sleep(45)
+    while True:
+        _pull_analytics_once()
         time.sleep(3600)
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
@@ -860,34 +935,63 @@ def post_log():
 
 @app.route("/analytics", methods=["GET"])
 def analytics():
+    """7-day totals from each post's latest numbers (not summed snapshots)."""
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
-            SELECT fp.page_name,
-                   SUM(a.impressions) as impressions,
-                   SUM(a.reach) as reach,
-                   SUM(a.likes) as likes,
-                   SUM(a.comments) as comments,
-                   SUM(a.saves) as saves,
-                   COUNT(DISTINCT a.ig_media_id) as posts_tracked
-            FROM analytics_snapshots a
-            JOIN fan_pages fp ON fp.id = a.fan_page_id
-            WHERE a.pulled_at >= NOW() - INTERVAL '7 days'
-            GROUP BY fp.page_name
-            ORDER BY impressions DESC
-        """)
+            SELECT fp.page_name, COUNT(*) AS posts_tracked,
+                   SUM(m.views) AS views, SUM(m.reach) AS reach, SUM(m.likes) AS likes,
+                   SUM(m.comments) AS comments, SUM(m.saves) AS saves, SUM(m.shares) AS shares
+            FROM post_metrics m JOIN fan_pages fp ON fp.id = m.fan_page_id
+            WHERE m.posted_at >= NOW() - INTERVAL '7 days'
+            GROUP BY fp.page_name ORDER BY views DESC NULLS LAST""")
         rows = cur.fetchall()
         cur.execute("""
-            SELECT SUM(impressions) as impressions, SUM(reach) as reach,
-                   SUM(likes) as likes, SUM(comments) as comments, SUM(saves) as saves
-            FROM analytics_snapshots
-            WHERE pulled_at >= NOW() - INTERVAL '7 days'
-        """)
+            SELECT COUNT(*) AS posts, SUM(views) AS views, SUM(reach) AS reach, SUM(likes) AS likes,
+                   SUM(comments) AS comments, SUM(saves) AS saves, SUM(shares) AS shares
+            FROM post_metrics WHERE posted_at >= NOW() - INTERVAL '7 days'""")
         totals = cur.fetchone()
         cur.close()
         conn.close()
         return jsonify({"by_page": rows, "totals_7d": totals})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/analytics-status", methods=["GET"])
+def analytics_status():
+    """Per page: when metrics were last pulled, how many posts are tracked, and the last error."""
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT p.page_name, p.page_group, p.analytics_error,
+                   to_char(p.analytics_pulled_at, 'YYYY-MM-DD HH24:MI "UTC"') AS pulled_at,
+                   (SELECT COUNT(*) FROM post_metrics m WHERE m.fan_page_id = p.id) AS posts_tracked,
+                   (SELECT COALESCE(SUM(views), 0) FROM post_metrics m WHERE m.fan_page_id = p.id) AS views
+            FROM fan_pages p ORDER BY p.id""")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return jsonify({"pages": rows})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/analytics/today", methods=["GET"])
+def analytics_today():
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT fp.page_name, COUNT(*) AS posts, SUM(m.views) AS views, SUM(m.reach) AS reach,
+                   SUM(m.likes) AS likes, SUM(m.saves) AS saves
+            FROM post_metrics m JOIN fan_pages fp ON fp.id = m.fan_page_id
+            WHERE m.posted_at >= (NOW() AT TIME ZONE 'America/New_York')::date AT TIME ZONE 'America/New_York'
+            GROUP BY fp.page_name ORDER BY views DESC NULLS LAST""")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return jsonify({"today": rows})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -928,30 +1032,6 @@ def followers():
                     "posts": data.get("media_count")
                 })
         return jsonify({"pages": results})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/analytics/today", methods=["GET"])
-def analytics_today():
-    try:
-        conn = get_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("""
-            SELECT fp.page_name,
-                   SUM(a.impressions) as impressions,
-                   SUM(a.reach) as reach,
-                   SUM(a.likes) as likes,
-                   SUM(a.saves) as saves
-            FROM analytics_snapshots a
-            JOIN fan_pages fp ON fp.id = a.fan_page_id
-            WHERE a.pulled_at >= (NOW() AT TIME ZONE 'America/New_York')::date
-            GROUP BY fp.page_name
-            ORDER BY impressions DESC
-        """)
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return jsonify({"today": rows})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1899,6 +1979,107 @@ def jobs_status():
         return jsonify(out)
     except Exception as e:
         return jsonify({"error": type(e).__name__}), 500
+
+# ── ANALYTICS DASHBOARD ──────────────────────────────────────────────────────────────────
+
+DASHBOARD_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Analytics</title>
+<style>
+:root{--bg:#f6f5fb;--card:#fff;--fg:#1c1b22;--muted:#6b6a78;--accent:#7c3aed;--line:#dcdae8;--good:#16a34a;--bad:#dc2626}
+@media(prefers-color-scheme:dark){:root{--bg:#0f0e14;--card:#1a1923;--fg:#f1f0f7;--muted:#9a98aa;--line:#2e2c3b}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;padding:16px;max-width:1200px;margin-inline:auto}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--muted);margin-bottom:14px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:12px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}.card b{display:block;font-size:22px}.card span{color:var(--muted);font-size:12px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.bar select,.bar input,.bar button{padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);font:inherit}
+.bar button{background:var(--accent);color:#fff;border:0;cursor:pointer;font-weight:600}
+.pages{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.pg{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:13px}
+.pg.err{border-color:var(--bad)}.pg small{display:block;color:var(--muted)}.pg .e{color:var(--bad)}
+.wrap{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:12px}
+table{border-collapse:collapse;width:100%;min-width:860px}th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{cursor:pointer;color:var(--muted);font-weight:600;user-select:none}td.n,th.n{text-align:right}td.cap{white-space:normal;min-width:220px;max-width:340px}
+td a{color:var(--accent)}.up{color:var(--good)}.empty{padding:24px;color:var(--muted)}
+</style></head><body><h1>Post analytics</h1><div class="sub" id="sub">Loading...</div>
+<div class="cards" id="cards"></div>
+<div class="bar"><select id="fpage"><option value="">All pages</option></select>
+<select id="fgroup"><option value="">All groups</option><option value="clipper">Clipper</option><option value="promo">Promo</option></select>
+<input id="fq" placeholder="Search captions"><button id="refresh">Refresh now</button></div>
+<div class="pages" id="pages"></div>
+<div class="wrap"><table><thead id="head"></thead><tbody id="body"></tbody></table></div>
+<script>
+const COLS=[['page','Page'],['posted','Posted'],['caption','Caption'],['views','Views',1],['reach','Reach',1],['likes','Likes',1],['comments','Comments',1],['saves','Saves',1],['shares','Shares',1],['views_delta','+Views',1]];
+let rows=[],pages=[],sortKey='ts',asc=false;
+const $=id=>document.getElementById(id);
+const fmt=n=>(n==null?0:n).toLocaleString();
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
+async function api(url,opt={}){let key=localStorage.getItem('adminKey')||'';if(!key){key=prompt('Enter admin key:')||'';localStorage.setItem('adminKey',key)}
+ const r=await fetch(url,{...opt,headers:{'X-Admin-Key':key}});if(r.status===401){localStorage.removeItem('adminKey');$('sub').textContent='Wrong key - reload and try again.';throw 0}
+ if(r.status===503){$('sub').textContent='ADMIN_KEY is not set on the server.';throw 0}return r.json()}
+async function load(){const j=await api('/dashboard/data');rows=j.posts;pages=j.pages;
+ const sel=$('fpage'),cur=sel.value;sel.replaceChildren(new Option('All pages',''),...pages.map(p=>new Option(p.page_name,p.page_name)));sel.value=cur;render()}
+function filtered(){const pg=$('fpage').value,gr=$('fgroup').value,q=$('fq').value.toLowerCase();
+ return rows.filter(r=>(!pg||r.page===pg)&&(!gr||r.group===gr)&&(!q||(r.caption||'').toLowerCase().includes(q)))}
+function render(){const f=filtered();const sum=k=>f.reduce((a,r)=>a+(r[k]||0),0);
+ $('sub').textContent=f.length+' posts - '+pages.length+' pages';
+ $('cards').replaceChildren(...[['Posts',f.length],['Views',sum('views')],['Reach',sum('reach')],['Likes',sum('likes')],['Comments',sum('comments')],['Saves',sum('saves')],['Shares',sum('shares')]].map(([l,v])=>{const c=el('div','card');c.append(el('b',0,fmt(v)),el('span',0,l));return c}));
+ $('pages').replaceChildren(...pages.map(p=>{const d=el('div','pg'+(p.analytics_error?' err':''));d.append(el('b',0,p.page_name),el('small',0,(p.page_group||'')+(p.active?'':' (paused)')+' - pulled '+(p.pulled||'never')));
+  if(p.analytics_error)d.append(el('small','e',p.analytics_error));return d}));
+ $('head').replaceChildren((()=>{const tr=el('tr');for(const [k,l,n] of COLS){const th=el('th',n?'n':'',l+(sortKey===k?(asc?' ▲':' ▼'):''));th.onclick=()=>{if(sortKey===k)asc=!asc;else{sortKey=k;asc=false}render()};tr.append(th)}return tr})());
+ const key=sortKey==='posted'?'ts':sortKey;
+ f.sort((a,b)=>{const x=a[key],y=b[key];const c=(typeof x==='string'?(x||'').localeCompare(y||''):(x||0)-(y||0));return asc?c:-c});
+ const body=$('body');body.replaceChildren();
+ if(!f.length){const tr=el('tr'),td=el('td','empty','No posts yet. Click Refresh now, then reload in a minute.');td.colSpan=COLS.length;tr.append(td);body.append(tr);return}
+ for(const r of f){const tr=el('tr');
+  tr.append(el('td',0,r.page),el('td',0,r.posted||''));
+  const c=el('td','cap');if(r.permalink){const a=el('a',0,(r.caption||'(no caption)').slice(0,90));a.href=r.permalink;a.target='_blank';a.rel='noopener noreferrer';c.append(a)}else c.textContent=(r.caption||'').slice(0,90);tr.append(c);
+  for(const k of ['views','reach','likes','comments','saves','shares'])tr.append(el('td','n',fmt(r[k])));
+  tr.append(el('td','n'+(r.views_delta>0?' up':''),r.views_delta>0?'+'+fmt(r.views_delta):'-'));body.append(tr)}}
+for(const id of ['fpage','fgroup'])$(id).onchange=render;$('fq').oninput=render;
+$('refresh').onclick=async()=>{$('refresh').disabled=true;await api('/dashboard/refresh',{method:'POST'});$('sub').textContent='Refreshing - reload in a minute...';setTimeout(()=>{$('refresh').disabled=false},4000)};
+load().catch(()=>{});
+</script></body></html>"""
+
+@app.route("/dashboard", methods=["GET"])
+def dashboard_page():
+    return Response(DASHBOARD_HTML, mimetype="text/html")
+
+@app.route("/dashboard/data", methods=["GET"])
+def dashboard_data():
+    denied = _admin_guard()
+    if denied:
+        return denied
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT p.page_name AS page, p.page_group AS "group", m.permalink, m.media_type, m.caption,
+                   to_char(m.posted_at AT TIME ZONE 'America/New_York', 'Mon DD, HH12:MI AM') AS posted,
+                   EXTRACT(EPOCH FROM m.posted_at)::bigint AS ts,
+                   m.views, m.reach, m.likes, m.comments, m.saves, m.shares,
+                   m.views - COALESCE(m.prev_views, m.views) AS views_delta
+            FROM post_metrics m JOIN fan_pages p ON p.id = m.fan_page_id
+            ORDER BY m.posted_at DESC NULLS LAST LIMIT 3000""")
+        posts = cur.fetchall()
+        cur.execute("""
+            SELECT id, page_name, page_group, active, analytics_error,
+                   to_char(analytics_pulled_at AT TIME ZONE 'America/New_York', 'Mon DD HH12:MI AM') AS pulled
+            FROM fan_pages ORDER BY id""")
+        pages = cur.fetchall()
+        cur.close()
+        conn.close()
+        return jsonify({"posts": posts, "pages": pages})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/dashboard/refresh", methods=["POST"])
+def dashboard_refresh():
+    denied = _admin_guard()
+    if denied:
+        return denied
+    if _pull_lock.locked():
+        return jsonify({"started": False, "note": "a refresh is already running"})
+    threading.Thread(target=_pull_analytics_once, daemon=True).start()
+    return jsonify({"started": True})
 
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
