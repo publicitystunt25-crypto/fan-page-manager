@@ -9,5 +9,22 @@
       {"page_ids": [4], "text": "AB AND DEE KNEW EXACTLY WHERE THIS WAS HEADED",
        "crop": 0.92, "crop_x": 0.3, "crop_y": 0.4, "strip_pos": "top"}
     ]
+  },
+  {
+    "id": "kai_space_v2_20261014",
+    "url": "https://www.twitch.tv/kaicenat/clip/InexpensivePopularPuddingAMPTropPunch-kDnmvZ2YAwSSP-_d",
+    "footer": "@nathanielonline",
+    "variants": [
+      {"page_ids": [2], "text": "Kai Cenat talks about going to space",
+       "crop": 0.96, "crop_x": 0.5, "crop_y": 0.5, "strip_pos": "bottom"},
+      {"page_ids": [4], "text": "Kai Cenat opens up about going to space",
+       "crop": 0.92, "crop_x": 0.3, "crop_y": 0.4, "strip_pos": "top"},
+      {"page_ids": [10], "text": "Kai Cenat on going to space",
+       "crop": 0.94, "crop_x": 0.6, "crop_y": 0.45, "strip_pos": "bottom"},
+      {"page_ids": [14], "text": "Kai Cenat gets real about going to space",
+       "crop": 0.90, "crop_x": 0.4, "crop_y": 0.5, "strip_pos": "top"},
+      {"page_ids": [19], "text": "Kai Cenat and the idea of going to space",
+       "crop": 0.95, "crop_x": 0.5, "crop_y": 0.35, "strip_pos": "bottom"}
+    ]
   }
 ]
