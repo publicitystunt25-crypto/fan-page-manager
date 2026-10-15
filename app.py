@@ -2294,6 +2294,38 @@ def _demographics_worker(job):
     except Exception as e:
         print(f"[demographics] could not store result: {type(e).__name__}")
 
+def _report_worker(job):
+    """READ-ONLY, database only (no Instagram calls). Lists a page's recent posts with their latest numbers and says
+    whether each one was a clip posted through the render pipeline or an older bot post (quote cards etc.).
+    job["report"] = {"page_ids": [..], "days": 8}"""
+    spec = job["report"]
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT p.page_name, to_char(m.posted_at AT TIME ZONE 'UTC', 'MM-DD HH24:MI') AS posted_utc,
+                   m.views, m.reach, m.likes, m.comments, m.saves, m.shares, m.reposts, m.follows, m.profile_visits,
+                   LEFT(COALESCE(m.caption, ''), 45) AS caption,
+                   CASE WHEN l.media_url LIKE '%%/videos/%%' OR l.media_url LIKE '%%/clip-video/%%' THEN 'clip'
+                        WHEN l.ig_post_id IS NOT NULL THEN 'older bot post'
+                        ELSE 'not from bot' END AS kind
+            FROM post_metrics m
+            JOIN fan_pages p ON p.id = m.fan_page_id
+            LEFT JOIN post_log l ON l.ig_post_id = m.ig_media_id
+            WHERE m.fan_page_id = ANY(%s) AND m.posted_at >= NOW() - (%s || ' days')::interval
+            ORDER BY p.page_name, m.posted_at DESC""", ([int(x) for x in spec["page_ids"]], str(int(spec.get("days", 8)))))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        summary = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+    except Exception as e:
+        summary = json.dumps({"failed": type(e).__name__})
+    print(f"[report] {job['id']}: {len(summary)} chars")
+    try:
+        _set_setting(f"job_{job['id']}_result", summary)
+    except Exception as e:
+        print(f"[report] could not store result: {type(e).__name__}")
+
 def _run_jobs_once():
     """Claim every job in jobs.json that has never started (the INSERT only succeeds once per id)."""
     try:
@@ -2309,6 +2341,12 @@ def _run_jobs_once():
         conn = get_conn()
         cur = conn.cursor()
         for job in jobs:
+            if isinstance(job.get("report"), dict) and isinstance(job.get("id"), str):
+                cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
+                               ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
+                if cur.fetchone():
+                    threading.Thread(target=_report_worker, args=(job,), daemon=True).start()
+                continue
             if isinstance(job.get("demographics"), dict) and isinstance(job.get("id"), str):
                 cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
                                ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))

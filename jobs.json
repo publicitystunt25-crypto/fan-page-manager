@@ -1071,5 +1071,14 @@
       ],
       "breakdown": "country"
     }
+  },
+  {
+    "id": "report_hottakez01_20261015",
+    "report": {
+      "page_ids": [
+        1
+      ],
+      "days": 8
+    }
   }
 ]
