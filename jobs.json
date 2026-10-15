@@ -867,5 +867,193 @@
         ]
       }
     ]
+  },
+  {
+    "id": "ab_spitting_game_20261015",
+    "render": "remote",
+    "url": "https://kick.com/deenthegreat/clips/clip_01M4Y1385KYWGEDNGAFW731GQC",
+    "footer": "",
+    "variants": [
+      {
+        "page_ids": [
+          1
+        ],
+        "text": "AB is spitting game",
+        "caption": "AB is spitting game",
+        "crop": 0.96,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_pos": "bottom",
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": 0.0,
+          "contrast": 1.0,
+          "saturation": 1.0
+        },
+        "tags": [
+          "bigfenditv"
+        ]
+      },
+      {
+        "page_ids": [
+          2
+        ],
+        "text": "AB is spitting game!",
+        "caption": "AB is spitting game.",
+        "crop": 0.92,
+        "crop_x": 0.3,
+        "crop_y": 0.4,
+        "strip_pos": "top",
+        "trim_start": 0.5,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.03,
+          "saturation": 1.05
+        },
+        "tags": [
+          "bigfenditv"
+        ]
+      },
+      {
+        "page_ids": [
+          4
+        ],
+        "text": "AB is SPITTING game",
+        "caption": "AB is spitting game!",
+        "crop": 0.94,
+        "crop_x": 0.6,
+        "crop_y": 0.45,
+        "strip_pos": "bottom",
+        "trim_start": 1.0,
+        "tone": {
+          "brightness": 0.01,
+          "contrast": 1.05,
+          "saturation": 1.02
+        },
+        "tags": [
+          "bigfenditv"
+        ]
+      },
+      {
+        "page_ids": [
+          10
+        ],
+        "text": "AB spitting game",
+        "caption": "AB is spitting game \ud83d\udd25",
+        "crop": 0.9,
+        "crop_x": 0.4,
+        "crop_y": 0.5,
+        "strip_pos": "top",
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": -0.01,
+          "contrast": 1.02,
+          "saturation": 1.06
+        },
+        "tags": [
+          "bigfenditv"
+        ]
+      },
+      {
+        "page_ids": [
+          14
+        ],
+        "text": "AB is spitting GAME",
+        "caption": "AB is spitting game \ud83d\udcaf",
+        "crop": 0.95,
+        "crop_x": 0.5,
+        "crop_y": 0.35,
+        "strip_pos": "bottom",
+        "trim_start": 1.5,
+        "tone": {
+          "brightness": 0.03,
+          "contrast": 1.04,
+          "saturation": 1.03
+        },
+        "tags": [
+          "bigfenditv"
+        ]
+      },
+      {
+        "page_ids": [
+          19
+        ],
+        "text": "AB is spitting game...",
+        "caption": "AB is spitting game...",
+        "crop": 0.93,
+        "crop_x": 0.45,
+        "crop_y": 0.4,
+        "strip_pos": "top",
+        "trim_start": 0.5,
+        "tone": {
+          "brightness": 0.0,
+          "contrast": 1.06,
+          "saturation": 1.04
+        },
+        "tags": [
+          "bigfenditv"
+        ]
+      },
+      {
+        "page_ids": [
+          25
+        ],
+        "text": "AB is spitting game!!",
+        "caption": "AB is spitting game!!",
+        "crop": 0.97,
+        "crop_x": 0.55,
+        "crop_y": 0.5,
+        "strip_pos": "bottom",
+        "trim_start": 1.0,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.01,
+          "saturation": 1.07
+        },
+        "tags": [
+          "bigfenditv"
+        ]
+      },
+      {
+        "page_ids": [
+          26
+        ],
+        "text": "AB is out here spitting game",
+        "caption": "AB is spitting game \ud83d\ude4c",
+        "crop": 0.91,
+        "crop_x": 0.35,
+        "crop_y": 0.45,
+        "strip_pos": "top",
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": -0.02,
+          "contrast": 1.04,
+          "saturation": 1.05
+        },
+        "tags": [
+          "bigfenditv"
+        ]
+      },
+      {
+        "page_ids": [
+          27
+        ],
+        "text": "AB is spitting that game",
+        "caption": "AB is spitting game \ud83d\udc4f",
+        "crop": 0.94,
+        "crop_x": 0.5,
+        "crop_y": 0.3,
+        "strip_pos": "bottom",
+        "trim_start": 1.5,
+        "tone": {
+          "brightness": 0.01,
+          "contrast": 1.03,
+          "saturation": 1.0
+        },
+        "tags": [
+          "bigfenditv"
+        ]
+      }
+    ]
   }
 ]
