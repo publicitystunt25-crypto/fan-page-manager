@@ -77,6 +77,7 @@ def init_db():
             posted_at TIMESTAMPTZ
         );
         ALTER TABLE clip_submissions ADD COLUMN IF NOT EXISTS variants TEXT;
+        ALTER TABLE post_log ADD COLUMN IF NOT EXISTS permalink TEXT;
         ALTER TABLE fan_pages ADD COLUMN IF NOT EXISTS name_locked BOOLEAN DEFAULT FALSE;
         ALTER TABLE fan_pages ADD COLUMN IF NOT EXISTS auth_type TEXT DEFAULT 'facebook';
         ALTER TABLE fan_pages ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMPTZ;
@@ -219,11 +220,19 @@ def post_to_ig(ig_account_id, page_token, media_url, caption, media_type="IMAGE"
         return None, err
     return ig_publish(ig_account_id, page_token, creation_id, graph)
 
-def _log_post(page_id, post_id, caption, media_url, err):
+def _fetch_permalink(graph, post_id, token):
+    """The public instagram.com link for a just-published post (None if Instagram will not say)."""
+    try:
+        return requests.get(f"{graph}/{post_id}", params={"fields": "permalink", "access_token": token},
+                            timeout=15).json().get("permalink")
+    except Exception:
+        return None
+
+def _log_post(page_id, post_id, caption, media_url, err, permalink=None):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("""INSERT INTO post_log (fan_page_id, ig_post_id, caption, media_url, error)
-                   VALUES (%s, %s, %s, %s, %s)""", (page_id, post_id, caption, media_url, err))
+    cur.execute("""INSERT INTO post_log (fan_page_id, ig_post_id, caption, media_url, error, permalink)
+                   VALUES (%s, %s, %s, %s, %s, %s)""", (page_id, post_id, caption, media_url, err, permalink))
     conn.commit()
     cur.close()
     conn.close()
@@ -268,8 +277,9 @@ def _post_pipelined(items, gap=PUBLISH_GAP):
             if n:
                 time.sleep(random.uniform(*gap))
             post_id, err = ig_publish(page["ig_account_id"], page["page_access_token"], cid, _graph_for(page.get("auth_type")))
+        link = _fetch_permalink(_graph_for(page.get("auth_type")), post_id, page["page_access_token"]) if post_id else None
         try:
-            _log_post(page["id"], post_id, it["caption"], it["url"], err)
+            _log_post(page["id"], post_id, it["caption"], it["url"], err, link)
         except Exception as e:
             print(f"[post] could not log: {type(e).__name__}")
         shown = f"{post_id} ({note})" if (post_id and note) else post_id
@@ -924,9 +934,10 @@ def post_log():
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
             SELECT pl.id, fp.page_name, pl.ig_post_id, pl.caption,
-                   pl.posted_at, pl.error
+                   pl.posted_at, pl.error, COALESCE(pl.permalink, m.permalink) AS permalink
             FROM post_log pl
             JOIN fan_pages fp ON fp.id = pl.fan_page_id
+            LEFT JOIN post_metrics m ON m.ig_media_id = pl.ig_post_id
             ORDER BY pl.posted_at DESC
             LIMIT 100
         """)
