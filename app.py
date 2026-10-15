@@ -2150,56 +2150,87 @@ def _delete_old_worker(job):
     except Exception as e:
         print(f"[delete-old] could not store result: {type(e).__name__}")
 
+LIMIT_HINTS = ("too many actions", "rate limit", "try again later", "temporarily blocked", "action blocked")
+
 def _wipe_worker(job):
-    """Deletes EVERY post on the named pages that is older than job["wipe"]["before"], bot posts included.
-    Used when the owner repurposes a page. Posts made after the cutoff are never touched.
-    job["wipe"] = {"page_ids": [..], "before": "2026-10-14T23:50:00+0000"}"""
-    from datetime import datetime, timezone
+    """Slowly deletes EVERY post older than job["wipe"]["before"] on the named pages (bot posts included),
+    in small batches so Instagram's action limits are not hit. If Instagram says 'too many actions' it stops
+    deleting for a long cool-down. Re-lists what is left each pass, so it is safe to resume after a restart.
+    job["wipe"] = {"page_ids": [..], "before": "2026-10-14T23:50:00+0000", "per_batch": 12,
+                   "delay": [20, 50], "batch_gap_minutes": 40, "cooldown_minutes": 120, "start_after_minutes": 90}"""
+    from datetime import datetime
     spec = job["wipe"]
-    summary = {}
+    per_batch = int(spec.get("per_batch", 12))
+    dmin, dmax = (spec.get("delay") or [20, 50])[:2]
+    gap = float(spec.get("batch_gap_minutes", 40)) * 60
+    cooldown = float(spec.get("cooldown_minutes", 120)) * 60
+    total_deleted, limit_hits, passes = 0, 0, 0
+    per_page_done = {}
     try:
         cutoff = datetime.strptime(spec["before"], "%Y-%m-%dT%H:%M:%S%z")
-        conn = get_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT id, page_name, ig_account_id, page_access_token, auth_type FROM fan_pages WHERE id = ANY(%s)",
-                    ([int(p) for p in spec["page_ids"]],))
-        pages = cur.fetchall()
-        cur.close()
-        conn.close()
-        deleted_ids, failed, per_page = [], [], {}
-        for page in pages:
-            g = _graph_for(page.get("auth_type"))
-            url = f"{g}/{page['ig_account_id']}/media"
-            params = {"fields": "id,timestamp", "limit": 50, "access_token": page["page_access_token"]}
-            todo, guard = [], 0
-            while url and guard < 30:
-                r = requests.get(url, params=params, timeout=30).json()
-                guard += 1
-                for m in r.get("data", []):
-                    ts = datetime.strptime(m["timestamp"], "%Y-%m-%dT%H:%M:%S%z") if m.get("timestamp") else None
-                    if ts and ts < cutoff:
-                        todo.append(m["id"])
-                url, params = (r.get("paging") or {}).get("next"), None
-            n_ok = 0
-            for mid in todo:
-                d = requests.delete(f"{g}/{mid}", params={"access_token": page["page_access_token"]}, timeout=30).json()
-                if d.get("success"):
-                    n_ok += 1
-                    deleted_ids.append(mid)
-                else:
-                    failed.append(f"{mid}: {(d.get('error') or {}).get('message', str(d))[:80]}")
-                time.sleep(random.uniform(3, 6))
-            per_page[page["page_name"]] = {"found": len(todo), "deleted": n_ok}
-        if deleted_ids:
+        time.sleep(float(spec.get("start_after_minutes", 0)) * 60)
+        while passes < 80:
+            passes += 1
             conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("DELETE FROM post_metrics WHERE ig_media_id = ANY(%s)", (deleted_ids,))
-            conn.commit()
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("SELECT id, page_name, ig_account_id, page_access_token, auth_type FROM fan_pages WHERE id = ANY(%s)",
+                        ([int(p) for p in spec["page_ids"]],))
+            pages = cur.fetchall()
             cur.close()
             conn.close()
-        summary = {"deleted": len(deleted_ids), "per_page": per_page, "failed": failed[:10], "failed_count": len(failed)}
+            remaining, hit_limit = 0, False
+            for page in pages:
+                g = _graph_for(page.get("auth_type"))
+                url = f"{g}/{page['ig_account_id']}/media"
+                params = {"fields": "id,timestamp", "limit": 50, "access_token": page["page_access_token"]}
+                todo, guard = [], 0
+                while url and guard < 30:
+                    r = requests.get(url, params=params, timeout=30).json()
+                    guard += 1
+                    for m in r.get("data", []):
+                        ts = datetime.strptime(m["timestamp"], "%Y-%m-%dT%H:%M:%S%z") if m.get("timestamp") else None
+                        if ts and ts < cutoff:
+                            todo.append(m["id"])
+                    url, params = (r.get("paging") or {}).get("next"), None
+                remaining += len(todo)
+                per_page_done.setdefault(page["page_name"], 0)
+                if hit_limit:
+                    continue
+                gone = []
+                for mid in todo[:per_batch]:
+                    d = requests.delete(f"{g}/{mid}", params={"access_token": page["page_access_token"]}, timeout=30).json()
+                    if d.get("success"):
+                        gone.append(mid)
+                    else:
+                        msg = str((d.get("error") or {}).get("message", d)).lower()
+                        if any(h in msg for h in LIMIT_HINTS):
+                            hit_limit = True
+                            limit_hits += 1
+                            break
+                    time.sleep(random.uniform(float(dmin), float(dmax)))
+                remaining -= len(gone)
+                per_page_done[page["page_name"]] += len(gone)
+                total_deleted += len(gone)
+                if gone:
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM post_metrics WHERE ig_media_id = ANY(%s)", (gone,))
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+            try:
+                _set_setting(f"job_{job['id']}_progress", json.dumps(
+                    {"pass": passes, "deleted": total_deleted, "remaining": remaining, "limit_hits": limit_hits,
+                     "per_page": per_page_done}, separators=(",", ":")))
+            except Exception:
+                pass
+            if remaining <= 0:
+                break
+            time.sleep(cooldown if hit_limit else gap)
+        summary = {"deleted": total_deleted, "remaining": remaining, "passes": passes, "limit_hits": limit_hits,
+                   "per_page": per_page_done}
     except Exception as e:
-        summary = {"failed": type(e).__name__}
+        summary = {"failed": type(e).__name__, "deleted": total_deleted}
     text = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
     print(f"[wipe] {job['id']}: {text[:300]}")
     try:
@@ -2225,7 +2256,11 @@ def _run_jobs_once():
             if isinstance(job.get("wipe"), dict) and isinstance(job.get("id"), str):
                 cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
                                ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
-                if cur.fetchone():
+                start = bool(cur.fetchone())
+                if not start and job["wipe"].get("resume"):
+                    cur.execute("SELECT 1 FROM app_settings WHERE key=%s", (f"job_{job['id']}_result",))
+                    start = not cur.fetchall()      # claimed earlier but never finished (a restart interrupted it)
+                if start:
                     threading.Thread(target=_wipe_worker, args=(job,), daemon=True).start()
                 continue
             if isinstance(job.get("delete_old"), dict) and isinstance(job.get("id"), str):
