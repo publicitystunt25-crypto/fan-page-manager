@@ -317,5 +317,157 @@
       "start_after_minutes": 90,
       "resume": true
     }
+  },
+  {
+    "id": "rayj_team_20261015",
+    "render": "remote",
+    "url": "https://kick.com/deenthegreat/clips/clip_01M4YG84B6C370TJ6QGH3QEEM9",
+    "footer": "",
+    "variants": [
+      {
+        "page_ids": [
+          1
+        ],
+        "text": "Ray J Ready to Take One For The TEAM",
+        "crop": 0.96,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_pos": "bottom",
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": 0.0,
+          "contrast": 1.0,
+          "saturation": 1.0
+        }
+      },
+      {
+        "page_ids": [
+          2
+        ],
+        "text": "Ray J is ready to take one for the team",
+        "crop": 0.92,
+        "crop_x": 0.3,
+        "crop_y": 0.4,
+        "strip_pos": "top",
+        "trim_start": 0.5,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.03,
+          "saturation": 1.05
+        }
+      },
+      {
+        "page_ids": [
+          4
+        ],
+        "text": "Ray J ready to take one for the TEAM",
+        "crop": 0.94,
+        "crop_x": 0.6,
+        "crop_y": 0.45,
+        "strip_pos": "bottom",
+        "trim_start": 1.0,
+        "tone": {
+          "brightness": 0.01,
+          "contrast": 1.05,
+          "saturation": 1.02
+        }
+      },
+      {
+        "page_ids": [
+          10
+        ],
+        "text": "Ray J says he's ready to take one for the team",
+        "crop": 0.9,
+        "crop_x": 0.4,
+        "crop_y": 0.5,
+        "strip_pos": "top",
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": -0.01,
+          "contrast": 1.02,
+          "saturation": 1.06
+        }
+      },
+      {
+        "page_ids": [
+          14
+        ],
+        "text": "Ray J: ready to take one for the team",
+        "crop": 0.95,
+        "crop_x": 0.5,
+        "crop_y": 0.35,
+        "strip_pos": "bottom",
+        "trim_start": 1.5,
+        "tone": {
+          "brightness": 0.03,
+          "contrast": 1.04,
+          "saturation": 1.03
+        }
+      },
+      {
+        "page_ids": [
+          19
+        ],
+        "text": "Ray J ready to take one for the team",
+        "crop": 0.93,
+        "crop_x": 0.45,
+        "crop_y": 0.4,
+        "strip_pos": "top",
+        "trim_start": 0.5,
+        "tone": {
+          "brightness": 0.0,
+          "contrast": 1.06,
+          "saturation": 1.04
+        }
+      },
+      {
+        "page_ids": [
+          25
+        ],
+        "text": "Ray J Ready To Take One For The Team",
+        "crop": 0.97,
+        "crop_x": 0.55,
+        "crop_y": 0.5,
+        "strip_pos": "bottom",
+        "trim_start": 1.0,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.01,
+          "saturation": 1.07
+        }
+      },
+      {
+        "page_ids": [
+          26
+        ],
+        "text": "Ray J is ready to take one for the TEAM",
+        "crop": 0.91,
+        "crop_x": 0.35,
+        "crop_y": 0.45,
+        "strip_pos": "top",
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": -0.02,
+          "contrast": 1.04,
+          "saturation": 1.05
+        }
+      },
+      {
+        "page_ids": [
+          27
+        ],
+        "text": "Ray J steps up to take one for the team",
+        "crop": 0.94,
+        "crop_x": 0.5,
+        "crop_y": 0.3,
+        "strip_pos": "bottom",
+        "trim_start": 1.5,
+        "tone": {
+          "brightness": 0.01,
+          "contrast": 1.03,
+          "saturation": 1.0
+        }
+      }
+    ]
   }
 ]
