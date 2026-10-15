@@ -2245,6 +2245,55 @@ def _wipe_worker(job):
     except Exception as e:
         print(f"[wipe] could not store result: {type(e).__name__}")
 
+def _demographics_worker(job):
+    """READ-ONLY. Country breakdown of each page's followers and of the people its posts reached.
+    job["demographics"] = {"page_ids": [..], "breakdown": "country"}"""
+    spec = job["demographics"]
+    breakdown = spec.get("breakdown", "country")
+    out = {}
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, page_name, ig_account_id, page_access_token, auth_type FROM fan_pages WHERE id = ANY(%s)",
+                    ([int(p) for p in spec["page_ids"]],))
+        pages = cur.fetchall()
+        cur.close()
+        conn.close()
+        for page in pages:
+            g = _graph_for(page.get("auth_type"))
+            entry = {}
+            for label, metric, extra in (("followers", "follower_demographics", {"period": "lifetime"}),
+                                         ("reached", "reached_audience_demographics", {"period": "lifetime"})):
+                try:
+                    r = requests.get(f"{g}/{page['ig_account_id']}/insights",
+                                     params={"metric": metric, "metric_type": "total_value", "breakdown": breakdown,
+                                             "access_token": page["page_access_token"], **extra}, timeout=30).json()
+                except Exception as e:
+                    entry[label] = f"error: {type(e).__name__}"
+                    continue
+                results = []
+                for item in r.get("data", []):
+                    for bd in ((item.get("total_value") or {}).get("breakdowns") or []):
+                        results += bd.get("results", [])
+                if not results:
+                    entry[label] = "unavailable: " + str((r.get("error") or {}).get("message", "no data"))[:90]
+                    continue
+                total = sum(int(x.get("value", 0)) for x in results) or 1
+                top = sorted(results, key=lambda x: -int(x.get("value", 0)))[:6]
+                entry[label] = [{"c": (x.get("dimension_values") or ["?"])[0], "n": int(x.get("value", 0)),
+                                 "pct": round(100 * int(x.get("value", 0)) / total)} for x in top]
+                entry[label + "_total"] = total
+            out[page["page_name"]] = entry
+            time.sleep(1)
+        summary = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
+    except Exception as e:
+        summary = json.dumps({"failed": type(e).__name__})
+    print(f"[demographics] {job['id']}: {len(summary)} chars")
+    try:
+        _set_setting(f"job_{job['id']}_result", summary)
+    except Exception as e:
+        print(f"[demographics] could not store result: {type(e).__name__}")
+
 def _run_jobs_once():
     """Claim every job in jobs.json that has never started (the INSERT only succeeds once per id)."""
     try:
@@ -2260,6 +2309,12 @@ def _run_jobs_once():
         conn = get_conn()
         cur = conn.cursor()
         for job in jobs:
+            if isinstance(job.get("demographics"), dict) and isinstance(job.get("id"), str):
+                cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
+                               ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
+                if cur.fetchone():
+                    threading.Thread(target=_demographics_worker, args=(job,), daemon=True).start()
+                continue
             if isinstance(job.get("wipe"), dict) and isinstance(job.get("id"), str):
                 cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
                                ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
