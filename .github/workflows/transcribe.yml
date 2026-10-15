@@ -1,0 +1,43 @@
+name: Transcribe clips
+
+# Speech-to-text for every entry in transcribe.json that has no transcript yet. The text is uploaded to R2 as
+# transcripts/<id>.json so the caption can be written from what is actually said in the clip.
+on:
+  push:
+    paths:
+      - "transcribe.json"
+  workflow_dispatch:
+
+concurrency:
+  group: transcribe-clips
+  cancel-in-progress: false
+
+jobs:
+  transcribe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-transcribe.txt
+
+      - name: Install
+        run: pip install -r requirements-transcribe.txt
+
+      - name: Cache speech model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-small
+
+      - name: Transcribe and upload
+        run: python transcribe_worker.py
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}

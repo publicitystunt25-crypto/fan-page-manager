@@ -1,0 +1,7 @@
+yt-dlp
+imageio-ffmpeg
+Pillow
+boto3
+requests
+av==16.1.0
+faster-whisper
