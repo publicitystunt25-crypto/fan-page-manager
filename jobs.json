@@ -314,7 +314,7 @@
       ],
       "batch_gap_minutes": 40,
       "cooldown_minutes": 120,
-      "start_after_minutes": 90,
+      "start_after_minutes": 0,
       "resume": true
     }
   },
@@ -484,7 +484,7 @@
       ],
       "batch_gap_minutes": 40,
       "cooldown_minutes": 120,
-      "start_after_minutes": 30,
+      "start_after_minutes": 0,
       "resume": true
     }
   },
