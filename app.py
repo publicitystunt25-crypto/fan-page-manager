@@ -1958,7 +1958,7 @@ def _run_remote_job(job, delay=(30, 90), wait_hours=3):
     base = _render_public_base()
     if not base:
         return "failed: render_config.json has no public_base yet"
-    url = f"{base}/manifests/{job['id']}.json"
+    url = f"{base}/manifests/{job.get('from_manifest') or job['id']}.json"   # from_manifest: reuse an earlier job's finished videos
     deadline = time.time() + wait_hours * 3600
     manifest = None
     while time.time() < deadline:
@@ -1977,7 +1977,12 @@ def _run_remote_job(job, delay=(30, 90), wait_hours=3):
         return "skipped: another process is already posting this job"
     stagger = job.get("stagger_minutes")      # e.g. [5, 10]: minutes between pages, to spread a clip over a while
     gap = (float(stagger[0]) * 60, float(stagger[1]) * 60) if stagger else PUBLISH_GAP
-    return _summarize(_post_pipelined(manifest.get("items", []), gap=gap))
+    items = manifest.get("items", [])
+    only = job.get("only_pages")                 # post just these pages from the earlier manifest
+    if only:
+        keep = {int(x) for x in only}
+        items = [it for it in items if keep & {int(p) for p in it["page_ids"]}]
+    return _summarize(_post_pipelined(items, gap=gap))
 
 def _jobs_worker(jobs):
     for job in jobs:

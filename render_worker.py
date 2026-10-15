@@ -172,8 +172,8 @@ def main():
     workers = int(os.environ.get("RENDER_WORKERS", "3"))
     failed = 0
     for job in jobs:
-        if job.get("render") != "remote" or not job.get("id") or not job.get("variants"):
-            continue
+        if job.get("render") != "remote" or not job.get("id") or not job.get("variants") or job.get("from_manifest"):
+            continue   # from_manifest jobs reuse videos that are already rendered
         if store.exists(f"manifests/{job['id']}.json"):
             continue
         try:

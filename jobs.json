@@ -1228,5 +1228,36 @@
         }
       }
     ]
+  },
+  {
+    "id": "yk_deshae_resume_20261015",
+    "render": "remote",
+    "from_manifest": "yk_deshae_heated_fixed_20261015",
+    "only_pages": [
+      4,
+      10,
+      14,
+      19,
+      25,
+      26
+    ],
+    "url": "https://kick.com/adinross/clips/clip_01M4YZ8J1QX9FPF4ARW39M505S",
+    "stagger_minutes": [
+      5,
+      10
+    ],
+    "variants": [
+      {
+        "page_ids": [
+          4,
+          10,
+          14,
+          19,
+          25,
+          26
+        ],
+        "text": "resume"
+      }
+    ]
   }
 ]
