@@ -105,7 +105,7 @@ def render_one(args):
     src, slug, platform, v, strip = args
     name = cr.render_clip(
         src, slug, platform, cr.clean_hook(v.get("text", "")),
-        hook_top=230, hook_size=62, hook_seconds=0,
+        hook_top=v.get("hook_top"), hook_size=v.get("hook_size", 76), hook_seconds=0,
         crop_factor=v.get("crop", 1.0), crop_x=v.get("crop_x", 0.5), crop_y=v.get("crop_y", 0.5),
         strip_lift=v.get("strip_lift"), strip_pos=v.get("strip_pos", "bottom"),
         trim_start=v.get("trim_start", 0.0), tone=v.get("tone"), strip=strip)

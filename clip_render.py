@@ -165,7 +165,9 @@ def generate_clip_hook(title, channel_name, hint=""):
         print(f"[hook] {e}")
         return fallback
 
-def make_hook_overlay(text, top=None, max_size=92):
+HOOK_STROKE = 9
+
+def make_hook_overlay(text, top=None, max_size=92, bottom=None):
     """Transparent 1080x1920 PNG with the hook text: white, black outline, centered, wrapped."""
     W, H = 1080, 1920
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -177,22 +179,38 @@ def make_hook_overlay(text, top=None, max_size=92):
         words, lines, cur = text.upper().split(), [], ""
         for w in words:
             trial = f"{cur} {w}".strip()
-            if d.textbbox((0, 0), trial, font=f, stroke_width=6)[2] <= max_w or not cur:
+            if d.textbbox((0, 0), trial, font=f, stroke_width=HOOK_STROKE)[2] <= max_w or not cur:
                 cur = trial
             else:
                 lines.append(cur)
                 cur = w
         lines.append(cur)
-        widest = max(d.textbbox((0, 0), l, font=f, stroke_width=6)[2] for l in lines)
+        widest = max(d.textbbox((0, 0), l, font=f, stroke_width=HOOK_STROKE)[2] for l in lines)
         if (widest <= max_w and len(lines) <= 3) or size <= 48:
             break
         size -= 4
-    y = HOOK_TOP if top is None else top
+    step = int(size * 1.2)
+    if bottom is not None:          # anchor the block by its bottom edge (text sits just above the video)
+        y = int(bottom) - len(lines) * step
+    else:
+        y = HOOK_TOP if top is None else top
+    y = max(y, 160)                 # never into Instagram's header area
+    from PIL import ImageFilter
+    shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shadow)
+    yy = y
     for line in lines:
-        box = d.textbbox((0, 0), line, font=f, stroke_width=6)
+        box = sd.textbbox((0, 0), line, font=f, stroke_width=HOOK_STROKE)
+        sd.text(((W - (box[2] - box[0])) // 2 - box[0] + 3, yy - box[1] + 6), line, font=f,
+                fill=(0, 0, 0, 200), stroke_width=HOOK_STROKE, stroke_fill=(0, 0, 0, 200))
+        yy += step
+    img = Image.alpha_composite(img, shadow.filter(ImageFilter.GaussianBlur(7)))
+    d = ImageDraw.Draw(img)
+    for line in lines:
+        box = d.textbbox((0, 0), line, font=f, stroke_width=HOOK_STROKE)
         d.text(((W - (box[2] - box[0])) // 2 - box[0], y - box[1]), line, font=f,
-               fill=(255, 255, 255, 255), stroke_width=6, stroke_fill=(0, 0, 0, 255))
-        y += int(size * 1.2)
+               fill=(255, 255, 255, 255), stroke_width=HOOK_STROKE, stroke_fill=(0, 0, 0, 255))
+        y += step
     path = os.path.join(CLIP_DIR, f"{uuid.uuid4().hex}_hook.png")
     img.save(path)
     return path
@@ -208,7 +226,7 @@ def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, 
     bar = None if no_bar else make_brand_bar(slug, "custom" if isinstance(strip, dict) else platform,
                                               strip if isinstance(strip, dict) else None)
     bar_h = 0 if no_bar else BAR_H
-    hook_png = make_hook_overlay(hook, hook_top, hook_size) if hook else None
+    hook_png = None   # built below, once we know the layout
     filename = f"{uuid.uuid4().hex}.mp4"
     dst = os.path.join(CLIP_DIR, filename)
     crop = detect_crop(src_path)
@@ -226,6 +244,16 @@ def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, 
     if crop:
         cw, ch = (int(v) for v in crop.split(":")[:2])
         portrait = ch / cw > 1.2
+    if hook:
+        h_top, h_bottom = hook_top, None
+        if hook_top is None:
+            if portrait:
+                h_top = 330                       # vertical videos: a bit higher, clear of Instagram's header
+            else:                                 # widescreen: sit just above the video block
+                cw_, ch_ = (int(v) for v in crop.split(":")[:2]) if crop else (16, 9)
+                block = int(1080 * ch_ / cw_) + bar_h
+                h_bottom = (1920 - block) // 2 - 36
+        hook_png = make_hook_overlay(hook, h_top, hook_size, h_bottom)
     last = "[vb]" if hook_png else "[v]"
     if portrait and no_bar:
         fc = f"[0:v]{pre}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920{last}"
