@@ -1,0 +1,49 @@
+name: Auto feed
+
+# Every hour: pick the newest decent clip from the channels in auto_feed.json, transcribe, write copy, render for
+# every page and hand it to the bot through auto/queue.json in R2. Turn it off with "enabled": false in auto_feed.json.
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only show which clip would be picked"
+        type: boolean
+        default: false
+
+concurrency:
+  group: auto-feed
+  cancel-in-progress: false
+
+jobs:
+  auto:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-autofeed.txt
+
+      - name: Install
+        run: pip install -r requirements-autofeed.txt
+
+      - name: Cache speech model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-small
+
+      - name: Pick, render and queue
+        run: python auto_feed.py ${{ inputs.dry_run && '--dry-run' || '' }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RENDER_WORKERS: "3"

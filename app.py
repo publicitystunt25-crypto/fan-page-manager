@@ -2349,6 +2349,45 @@ def _report_worker(job):
     except Exception as e:
         print(f"[report] could not store result: {type(e).__name__}")
 
+AUTO_FEED_STALE_HOURS = 3
+
+
+def _auto_feed_loop():
+    """Posts what the hourly auto feed (auto_feed.py on GitHub Actions) has rendered. Every couple of minutes it reads
+    auto/queue.json from the bucket; each new entry is claimed once (job_<id> in app_settings) and posted to its pages,
+    staggered. Entries older than AUTO_FEED_STALE_HOURS are skipped, so a bot that was asleep never dumps a backlog."""
+    time.sleep(60)
+    while True:
+        try:
+            base = _render_public_base()
+            if base:
+                r = requests.get(f"{base}/auto/queue.json", timeout=20, headers={"Cache-Control": "no-cache"})
+                queue = r.json() if r.status_code == 200 else []
+                for entry in sorted(queue, key=lambda e: e.get("created", 0)):
+                    jid = entry.get("id")
+                    if not isinstance(jid, str) or not jid.startswith("auto_"):
+                        continue
+                    stale = time.time() - entry.get("created", 0) > AUTO_FEED_STALE_HOURS * 3600
+                    if not _claim_setting(f"job_{jid}", "skipped: too old" if stale else "started"):
+                        continue
+                    if stale:
+                        print(f"[auto-feed] {jid}: skipped, queued over {AUTO_FEED_STALE_HOURS}h ago")
+                        continue
+                    try:
+                        summary = _run_remote_job({"id": jid, "stagger_minutes": entry.get("stagger_minutes", [3, 6])},
+                                                  wait_hours=1)
+                    except Exception as e:
+                        summary = f"failed: {type(e).__name__}: {str(e)[:200]}"
+                    print(f"[auto-feed] {jid}: {summary}")
+                    try:
+                        _set_setting(f"job_{jid}_result", summary)
+                    except Exception as e:
+                        print(f"[auto-feed] could not store result: {type(e).__name__}")
+        except Exception as e:
+            print(f"[auto-feed] {type(e).__name__}")
+        time.sleep(120)
+
+
 def _run_jobs_once():
     """Claim every job in jobs.json that has never started (the INSERT only succeeds once per id)."""
     try:
@@ -2794,6 +2833,7 @@ threading.Thread(target=_analytics_loop, daemon=True).start()
 threading.Thread(target=_clip_queue_loop, daemon=True).start()
 threading.Thread(target=_ig_token_refresh_loop, daemon=True).start()
 threading.Thread(target=_quote_scheduler_loop, daemon=True).start()
+threading.Thread(target=_auto_feed_loop, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))

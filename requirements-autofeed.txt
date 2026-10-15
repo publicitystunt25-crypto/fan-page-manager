@@ -1,0 +1,9 @@
+yt-dlp
+imageio-ffmpeg
+Pillow
+boto3
+requests
+anthropic
+curl_cffi
+av==16.1.0
+faster-whisper

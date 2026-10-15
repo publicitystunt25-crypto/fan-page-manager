@@ -70,6 +70,16 @@ class Store:
             self.s3.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType="application/json",
                                CacheControl="no-store")
 
+    def get_json(self, key, default=None):
+        if self.local:
+            p = os.path.join(self.local, key)
+            return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else default
+        from botocore.exceptions import ClientError
+        try:
+            return json.loads(self.s3.get_object(Bucket=self.bucket, Key=key)["Body"].read())
+        except ClientError:
+            return default
+
     def delete_key(self, key):
         if self.local:
             p = os.path.join(self.local, key)
