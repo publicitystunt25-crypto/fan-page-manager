@@ -474,8 +474,7 @@
     "id": "wipe_hottakes23_20261015",
     "wipe": {
       "page_ids": [
-        26,
-        27
+        26
       ],
       "before": "2026-10-15T00:51:16+0000",
       "per_batch": 12,
