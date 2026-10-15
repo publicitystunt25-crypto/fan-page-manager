@@ -469,5 +469,176 @@
         }
       }
     ]
+  },
+  {
+    "id": "wipe_hottakes23_20261015",
+    "wipe": {
+      "page_ids": [
+        26,
+        27
+      ],
+      "before": "2026-10-15T00:51:16+0000",
+      "per_batch": 12,
+      "delay": [
+        20,
+        50
+      ],
+      "batch_gap_minutes": 40,
+      "cooldown_minutes": 120,
+      "start_after_minutes": 30,
+      "resume": true
+    }
+  },
+  {
+    "id": "ab_chain_20261015",
+    "render": "remote",
+    "url": "https://kick.com/deenthegreat/clips/clip_01M4Y0VQ29Y32PA491YAG509Z6",
+    "footer": "",
+    "variants": [
+      {
+        "page_ids": [
+          1
+        ],
+        "text": "AB is BACKKKK Brand New AB Chain!!",
+        "crop": 0.96,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_pos": "bottom",
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": 0.0,
+          "contrast": 1.0,
+          "saturation": 1.0
+        }
+      },
+      {
+        "page_ids": [
+          2
+        ],
+        "text": "AB is BACK with a Brand New AB Chain!!",
+        "crop": 0.92,
+        "crop_x": 0.3,
+        "crop_y": 0.4,
+        "strip_pos": "top",
+        "trim_start": 0.5,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.03,
+          "saturation": 1.05
+        }
+      },
+      {
+        "page_ids": [
+          4
+        ],
+        "text": "AB is backkkk!! Brand new AB chain",
+        "crop": 0.94,
+        "crop_x": 0.6,
+        "crop_y": 0.45,
+        "strip_pos": "bottom",
+        "trim_start": 1.0,
+        "tone": {
+          "brightness": 0.01,
+          "contrast": 1.05,
+          "saturation": 1.02
+        }
+      },
+      {
+        "page_ids": [
+          10
+        ],
+        "text": "AB is BACK!! Brand New AB Chain",
+        "crop": 0.9,
+        "crop_x": 0.4,
+        "crop_y": 0.5,
+        "strip_pos": "top",
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": -0.01,
+          "contrast": 1.02,
+          "saturation": 1.06
+        }
+      },
+      {
+        "page_ids": [
+          14
+        ],
+        "text": "AB is back and the chain is brand new!!",
+        "crop": 0.95,
+        "crop_x": 0.5,
+        "crop_y": 0.35,
+        "strip_pos": "bottom",
+        "trim_start": 1.5,
+        "tone": {
+          "brightness": 0.03,
+          "contrast": 1.04,
+          "saturation": 1.03
+        }
+      },
+      {
+        "page_ids": [
+          19
+        ],
+        "text": "AB is BACKKKK!! New AB Chain",
+        "crop": 0.93,
+        "crop_x": 0.45,
+        "crop_y": 0.4,
+        "strip_pos": "top",
+        "trim_start": 0.5,
+        "tone": {
+          "brightness": 0.0,
+          "contrast": 1.06,
+          "saturation": 1.04
+        }
+      },
+      {
+        "page_ids": [
+          25
+        ],
+        "text": "AB is back!! Brand New AB Chain!!",
+        "crop": 0.97,
+        "crop_x": 0.55,
+        "crop_y": 0.5,
+        "strip_pos": "bottom",
+        "trim_start": 1.0,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.01,
+          "saturation": 1.07
+        }
+      },
+      {
+        "page_ids": [
+          26
+        ],
+        "text": "AB BACKKKK!! Brand New AB Chain",
+        "crop": 0.91,
+        "crop_x": 0.35,
+        "crop_y": 0.45,
+        "strip_pos": "top",
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": -0.02,
+          "contrast": 1.04,
+          "saturation": 1.05
+        }
+      },
+      {
+        "page_ids": [
+          27
+        ],
+        "text": "AB is back with a new chain!!",
+        "crop": 0.94,
+        "crop_x": 0.5,
+        "crop_y": 0.3,
+        "strip_pos": "bottom",
+        "trim_start": 1.5,
+        "tone": {
+          "brightness": 0.01,
+          "contrast": 1.03,
+          "saturation": 1.0
+        }
+      }
+    ]
   }
 ]
