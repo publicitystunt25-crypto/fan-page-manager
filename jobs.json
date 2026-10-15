@@ -1440,5 +1440,30 @@
         }
       }
     ]
+  },
+  {
+    "id": "adin_amanda_water_hottakes3_20261015",
+    "render": "remote",
+    "url": "https://kick.com/adinross/clips/clip_01M50VRSK8CRGGDQX6C5ET807E",
+    "footer": "",
+    "variants": [
+      {
+        "page_ids": [
+          27
+        ],
+        "text": "Amanda explains why she spat water at Mysterious",
+        "caption": "Amanda explains why she spat water at Mysterious \ud83d\udc40",
+        "crop": 0.95,
+        "crop_x": 0.5,
+        "crop_y": 0.45,
+        "strip_pos": "bottom",
+        "trim_start": 0.2,
+        "tone": {
+          "brightness": 0.01,
+          "contrast": 1.02,
+          "saturation": 1.03
+        }
+      }
+    ]
   }
 ]
