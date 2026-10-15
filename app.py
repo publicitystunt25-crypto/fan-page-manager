@@ -1975,7 +1975,9 @@ def _run_remote_job(job, delay=(30, 90), wait_hours=3):
     # past this point a restart must never re-post; the claim is atomic so overlapping copies can't both post
     if not _claim_setting(f"job_{job['id']}_posting"):
         return "skipped: another process is already posting this job"
-    return _summarize(_post_pipelined(manifest.get("items", [])))
+    stagger = job.get("stagger_minutes")      # e.g. [5, 10]: minutes between pages, to spread a clip over a while
+    gap = (float(stagger[0]) * 60, float(stagger[1]) * 60) if stagger else PUBLISH_GAP
+    return _summarize(_post_pipelined(manifest.get("items", []), gap=gap))
 
 def _jobs_worker(jobs):
     for job in jobs:

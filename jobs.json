@@ -1080,5 +1080,153 @@
       ],
       "days": 8
     }
+  },
+  {
+    "id": "yk_deshae_heated_20261015",
+    "render": "remote",
+    "url": "https://kick.com/adinross/clips/clip_01M4YZ8J1QX9FPF4ARW39M505Sq",
+    "footer": "",
+    "stagger_minutes": [
+      5,
+      10
+    ],
+    "variants": [
+      {
+        "page_ids": [
+          1
+        ],
+        "text": "Things Get HEATED between YK Osiris and Deshae Frost at a Press Conference",
+        "caption": "Things Get HEATED between YK Osiris and Deshae Frost at a Press Conference",
+        "crop": 0.96,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_pos": "bottom",
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": 0.0,
+          "contrast": 1.0,
+          "saturation": 1.0
+        }
+      },
+      {
+        "page_ids": [
+          2
+        ],
+        "text": "Things get heated between YK Osiris and Deshae Frost at a press conference",
+        "caption": "Things Get HEATED between YK Osiris and Deshae Frost at a Press Conference.",
+        "crop": 0.92,
+        "crop_x": 0.3,
+        "crop_y": 0.4,
+        "strip_pos": "top",
+        "trim_start": 0.5,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.03,
+          "saturation": 1.05
+        }
+      },
+      {
+        "page_ids": [
+          4
+        ],
+        "text": "YK Osiris and Deshae Frost get HEATED at a press conference",
+        "caption": "Things Get HEATED between YK Osiris and Deshae Frost at a Press Conference!",
+        "crop": 0.94,
+        "crop_x": 0.6,
+        "crop_y": 0.45,
+        "strip_pos": "bottom",
+        "trim_start": 1.0,
+        "tone": {
+          "brightness": 0.01,
+          "contrast": 1.05,
+          "saturation": 1.02
+        }
+      },
+      {
+        "page_ids": [
+          10
+        ],
+        "text": "Things get HEATED at the YK Osiris and Deshae Frost press conference",
+        "caption": "Things Get HEATED between YK Osiris and Deshae Frost at a Press Conference \ud83d\udd25",
+        "crop": 0.9,
+        "crop_x": 0.4,
+        "crop_y": 0.5,
+        "strip_pos": "top",
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": -0.01,
+          "contrast": 1.02,
+          "saturation": 1.06
+        }
+      },
+      {
+        "page_ids": [
+          14
+        ],
+        "text": "Press conference gets heated between YK Osiris and Deshae Frost",
+        "caption": "Things Get HEATED between YK Osiris and Deshae Frost at a Press Conference \ud83d\udcaf",
+        "crop": 0.95,
+        "crop_x": 0.5,
+        "crop_y": 0.35,
+        "strip_pos": "bottom",
+        "trim_start": 1.5,
+        "tone": {
+          "brightness": 0.03,
+          "contrast": 1.04,
+          "saturation": 1.03
+        }
+      },
+      {
+        "page_ids": [
+          19
+        ],
+        "text": "YK Osiris vs Deshae Frost gets HEATED at a press conference",
+        "caption": "Things Get HEATED between YK Osiris and Deshae Frost at a Press Conference...",
+        "crop": 0.93,
+        "crop_x": 0.45,
+        "crop_y": 0.4,
+        "strip_pos": "top",
+        "trim_start": 0.5,
+        "tone": {
+          "brightness": 0.0,
+          "contrast": 1.06,
+          "saturation": 1.04
+        }
+      },
+      {
+        "page_ids": [
+          25
+        ],
+        "text": "Things Get Heated: YK Osiris and Deshae Frost at a Press Conference",
+        "caption": "Things Get HEATED between YK Osiris and Deshae Frost at a Press Conference!!",
+        "crop": 0.97,
+        "crop_x": 0.55,
+        "crop_y": 0.5,
+        "strip_pos": "bottom",
+        "trim_start": 1.0,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.01,
+          "saturation": 1.07
+        }
+      },
+      {
+        "page_ids": [
+          26
+        ],
+        "text": "Things heat up between YK Osiris and Deshae Frost at a press conference",
+        "caption": "Things Get HEATED between YK Osiris and Deshae Frost at a Press Conference \ud83d\ude4c",
+        "crop": 0.91,
+        "crop_x": 0.35,
+        "crop_y": 0.45,
+        "strip_pos": "top",
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": -0.02,
+          "contrast": 1.04,
+          "saturation": 1.05
+        }
+      }
+    ]
   }
 ]
