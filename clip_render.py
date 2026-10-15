@@ -17,8 +17,36 @@ def _ffmpeg_exe():
     import imageio_ffmpeg
     return imageio_ffmpeg.get_ffmpeg_exe()
 
+def download_direct(url, max_mb=600):
+    """Download a plain video file (for example one uploaded to the R2 bucket). Returns (path, info dict)."""
+    import requests
+    from urllib.parse import urlparse
+    out = os.path.join(CLIP_DIR, uuid.uuid4().hex + ".mp4")
+    total = 0
+    with requests.get(url, stream=True, timeout=120, allow_redirects=True) as r:
+        r.raise_for_status()
+        ctype = (r.headers.get("content-type") or "").lower()
+        if ctype.startswith("text/") or "html" in ctype:
+            raise RuntimeError("that link is a web page, not a video file (use a direct link)")
+        with open(out, "wb") as f:
+            for chunk in r.iter_content(1 << 20):
+                total += len(chunk)
+                if total > max_mb * 1024 * 1024:
+                    f.close()
+                    os.remove(out)
+                    raise RuntimeError(f"video is larger than {max_mb} MB")
+                f.write(chunk)
+    return out, {"title": os.path.basename(urlparse(url).path) or "video"}
+
+def is_stream_url(url):
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or "").lower()
+    return host.endswith("twitch.tv") or host.endswith("kick.com")
+
 def download_clip(url):
-    """Download a Twitch/Kick clip. Returns (path, info dict)."""
+    """Download a Twitch/Kick clip (yt-dlp) or a direct video link. Returns (path, info dict)."""
+    if not is_stream_url(url):
+        return download_direct(url)
     import yt_dlp
     out = os.path.join(CLIP_DIR, uuid.uuid4().hex)
     opts = {"outtmpl": out + ".%(ext)s", "format": "best[ext=mp4]/best",
@@ -44,15 +72,29 @@ def _bold_font(size):
             return ImageFont.truetype(fp, size)
     return ImageFont.load_default()
 
-def make_brand_bar(slug, platform):
-    """1080xBAR_H black bar, centered: platform wordmark on top, PLATFORM.COM/CHANNEL underneath."""
+def _hex_rgb(value, default=(255, 255, 255)):
+    try:
+        v = str(value).lstrip("#")
+        return tuple(int(v[i:i + 2], 16) for i in (0, 2, 4)) if len(v) == 6 else default
+    except Exception:
+        return default
+
+def make_brand_bar(slug, platform, custom=None):
+    """1080xBAR_H black bar, centered: platform wordmark on top, PLATFORM.COM/CHANNEL underneath.
+    platform "custom" uses custom={"label": "...", "text": "...", "color": "#hex"} instead."""
     W = 1080
     bar = Image.new("RGB", (W, BAR_H), (0, 0, 0))
     d = ImageDraw.Draw(bar)
-    if platform == "kick":
+    if platform == "custom":
+        c = custom or {}
+        word, color = str(c.get("label") or ""), _hex_rgb(c.get("color"), (255, 255, 255))
+        second = str(c.get("text") or "")
+    elif platform == "kick":
         word, color, domain = "KICK", (83, 252, 24), "KICK.COM"
+        second = f"{domain}/{slug}".upper()
     else:
         word, color, domain = "TWITCH", (145, 70, 255), "TWITCH.TV"
+        second = f"{domain}/{slug}".upper()
     max_w = W - 2 * SIDE_SAFE
 
     def fit(text, size, min_size):
@@ -63,14 +105,19 @@ def make_brand_bar(slug, platform):
                 return f, box
             size -= 2
 
-    lf, lb = fit(word, 76, 40)
-    uf, ub = fit(f"{domain}/{slug}".upper(), 42, 20)
-    lh, uh = lb[3] - lb[1], ub[3] - ub[1]
-    gap = 14
-    y = (BAR_H - (lh + gap + uh)) // 2
-    d.text(((W - (lb[2] - lb[0])) // 2 - lb[0], y - lb[1]), word, font=lf, fill=color)
-    d.text(((W - (ub[2] - ub[0])) // 2 - ub[0], y + lh + gap - ub[1]),
-           f"{domain}/{slug}".upper(), font=uf, fill=(255, 255, 255))
+    if word and second:
+        lf, lb = fit(word, 76, 40)
+        uf, ub = fit(second, 42, 20)
+        lh, uh = lb[3] - lb[1], ub[3] - ub[1]
+        gap = 14
+        y = (BAR_H - (lh + gap + uh)) // 2
+        d.text(((W - (lb[2] - lb[0])) // 2 - lb[0], y - lb[1]), word, font=lf, fill=color)
+        d.text(((W - (ub[2] - ub[0])) // 2 - ub[0], y + lh + gap - ub[1]), second, font=uf, fill=(255, 255, 255))
+    else:   # a single line: whichever of label/text was given
+        one = second or word
+        f1, b1 = fit(one, 64, 24)
+        d.text(((W - (b1[2] - b1[0])) // 2 - b1[0], (BAR_H - (b1[3] - b1[1])) // 2 - b1[1]), one, font=f1,
+               fill=color if not second else (255, 255, 255))
     path = os.path.join(CLIP_DIR, f"{uuid.uuid4().hex}_bar.png")
     bar.save(path)
     return path
@@ -152,11 +199,15 @@ def make_hook_overlay(text, top=None, max_size=92):
 
 def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, hook_seconds=None,
                 crop_factor=1.0, crop_x=0.5, crop_y=0.5, strip_lift=None, strip_pos="bottom",
-                trim_start=0.0, tone=None):
+                trim_start=0.0, tone=None, strip=None, max_seconds=180):
     """1080x1920 output with a branded bar. Portrait picture fills the frame (bar overlaid above the
     caption area); landscape picture is centered over a blurred copy with the bar attached underneath.
     If `hook` is given it is shown as text over the first HOOK_SECONDS seconds."""
-    bar = make_brand_bar(slug, platform)
+    # strip: None = platform strip (Kick/Twitch), "none" = no strip, dict = custom strip
+    no_bar = (strip == "none")
+    bar = None if no_bar else make_brand_bar(slug, "custom" if isinstance(strip, dict) else platform,
+                                              strip if isinstance(strip, dict) else None)
+    bar_h = 0 if no_bar else BAR_H
     hook_png = make_hook_overlay(hook, hook_top, hook_size) if hook else None
     filename = f"{uuid.uuid4().hex}.mp4"
     dst = os.path.join(CLIP_DIR, filename)
@@ -176,9 +227,15 @@ def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, 
         cw, ch = (int(v) for v in crop.split(":")[:2])
         portrait = ch / cw > 1.2
     last = "[vb]" if hook_png else "[v]"
-    if portrait:
+    if portrait and no_bar:
+        fc = f"[0:v]{pre}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920{last}"
+    elif portrait:
         fc = (f"[0:v]{pre}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[base];"
               f"[base][1:v]overlay=0:H-{BAR_H + lift}{last}")
+    elif no_bar:
+        fc = (f"[0:v]{pre}scale='min(iw,1280)':-2,split[a][b];"
+              "[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=8:2,scale=1080:1920[bg];"
+              f"[b]scale=1080:-2[blk];[bg][blk]overlay=(W-w)/2:(H-h)/2{last}")
     else:
         fc = (f"[0:v]{pre}scale='min(iw,1280)':-2,split[a][b];"
               "[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=8:2,scale=1080:1920[bg];"
@@ -190,15 +247,18 @@ def render_clip(src_path, slug, platform, hook="", hook_top=None, hook_size=92, 
     cmd = [_ffmpeg_exe(), "-y"]
     if trim_start and float(trim_start) > 0:   # start a little later, so the file differs from the other versions
         cmd += ["-ss", str(min(float(trim_start), 3.0))]
-    cmd += ["-i", src_path, "-i", bar]
+    cmd += ["-i", src_path]
+    if bar:
+        cmd += ["-i", bar]
     if hook_png:
+        hidx = 1 if no_bar else 2
         window = HOOK_SECONDS if hook_seconds is None else hook_seconds
-        fc += (f";[vb][2:v]overlay=0:0:enable='lt(t,{window})'[v]" if window else ";[vb][2:v]overlay=0:0[v]")
+        fc += (f";[vb][{hidx}:v]overlay=0:0:enable='lt(t,{window})'[v]" if window else f";[vb][{hidx}:v]overlay=0:0[v]")
         cmd += ["-i", hook_png]
     cmd += ["-filter_complex", fc,
             "-map", "[v]", "-map", "0:a?", "-s", f"{OUT_W}x{OUT_H}", "-threads", "1",
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-t", "90", dst]
+            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-t", str(int(max_seconds)), dst]
     import subprocess
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)

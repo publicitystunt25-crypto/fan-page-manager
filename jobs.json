@@ -640,5 +640,232 @@
         }
       }
     ]
+  },
+  {
+    "id": "smorris_science_20261015",
+    "render": "remote",
+    "url": "https://pub-de038387bf1d44f788ae7e8721563225.r2.dev/videos/44799C5C-C5AF-4A5B-82C9-0E76BC1C6713.mp4",
+    "footer": "",
+    "strip": {
+      "text": "@lifeofsmorris"
+    },
+    "variants": [
+      {
+        "page_ids": [
+          1
+        ],
+        "text": "",
+        "caption": "Scott Morris has the game to a science",
+        "crop": 0.96,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_lift": 330,
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": 0.0,
+          "contrast": 1.0,
+          "saturation": 1.0
+        },
+        "tags": [
+          "lifeofsmorris",
+          "nathanielonline"
+        ],
+        "collaborators": [
+          "lifeofsmorris"
+        ]
+      },
+      {
+        "page_ids": [
+          2
+        ],
+        "text": "",
+        "caption": "Scott Morris has the game to a science.",
+        "crop": 0.93,
+        "crop_x": 0.35,
+        "crop_y": 0.45,
+        "strip_lift": 400,
+        "trim_start": 0.5,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.03,
+          "saturation": 1.05
+        },
+        "tags": [
+          "lifeofsmorris",
+          "nathanielonline"
+        ],
+        "collaborators": [
+          "lifeofsmorris"
+        ]
+      },
+      {
+        "page_ids": [
+          4
+        ],
+        "text": "",
+        "caption": "Scott Morris has the game to a science!",
+        "crop": 0.95,
+        "crop_x": 0.6,
+        "crop_y": 0.4,
+        "strip_lift": 480,
+        "trim_start": 1.0,
+        "tone": {
+          "brightness": 0.01,
+          "contrast": 1.05,
+          "saturation": 1.02
+        },
+        "tags": [
+          "lifeofsmorris",
+          "nathanielonline"
+        ],
+        "collaborators": [
+          "lifeofsmorris"
+        ]
+      },
+      {
+        "page_ids": [
+          10
+        ],
+        "text": "",
+        "caption": "Scott Morris has the game to a science \ud83d\udd25",
+        "crop": 0.92,
+        "crop_x": 0.4,
+        "crop_y": 0.5,
+        "strip_lift": 360,
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": -0.01,
+          "contrast": 1.02,
+          "saturation": 1.06
+        },
+        "tags": [
+          "lifeofsmorris",
+          "nathanielonline"
+        ],
+        "collaborators": [
+          "lifeofsmorris"
+        ]
+      },
+      {
+        "page_ids": [
+          14
+        ],
+        "text": "",
+        "caption": "Scott Morris has the game to a science \ud83d\udcaf",
+        "crop": 0.97,
+        "crop_x": 0.5,
+        "crop_y": 0.35,
+        "strip_lift": 520,
+        "trim_start": 1.5,
+        "tone": {
+          "brightness": 0.03,
+          "contrast": 1.04,
+          "saturation": 1.03
+        },
+        "tags": [
+          "lifeofsmorris",
+          "nathanielonline"
+        ],
+        "collaborators": [
+          "lifeofsmorris"
+        ]
+      },
+      {
+        "page_ids": [
+          19
+        ],
+        "text": "",
+        "caption": "Scott Morris has the game to a science...",
+        "crop": 0.94,
+        "crop_x": 0.45,
+        "crop_y": 0.4,
+        "strip_lift": 300,
+        "trim_start": 0.5,
+        "tone": {
+          "brightness": 0.0,
+          "contrast": 1.06,
+          "saturation": 1.04
+        },
+        "tags": [
+          "lifeofsmorris",
+          "nathanielonline"
+        ],
+        "collaborators": [
+          "lifeofsmorris"
+        ]
+      },
+      {
+        "page_ids": [
+          25
+        ],
+        "text": "",
+        "caption": "Scott Morris has the game to a science!!",
+        "crop": 0.91,
+        "crop_x": 0.55,
+        "crop_y": 0.5,
+        "strip_lift": 440,
+        "trim_start": 1.0,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.01,
+          "saturation": 1.07
+        },
+        "tags": [
+          "lifeofsmorris",
+          "nathanielonline"
+        ],
+        "collaborators": [
+          "lifeofsmorris"
+        ]
+      },
+      {
+        "page_ids": [
+          26
+        ],
+        "text": "",
+        "caption": "Scott Morris has the game to a science \ud83d\ude4c",
+        "crop": 0.96,
+        "crop_x": 0.35,
+        "crop_y": 0.45,
+        "strip_lift": 380,
+        "trim_start": 0.0,
+        "tone": {
+          "brightness": -0.02,
+          "contrast": 1.04,
+          "saturation": 1.05
+        },
+        "tags": [
+          "lifeofsmorris",
+          "nathanielonline"
+        ],
+        "collaborators": [
+          "lifeofsmorris"
+        ]
+      },
+      {
+        "page_ids": [
+          27
+        ],
+        "text": "",
+        "caption": "Scott Morris has the game to a science \ud83d\udc4f",
+        "crop": 0.93,
+        "crop_x": 0.5,
+        "crop_y": 0.3,
+        "strip_lift": 500,
+        "trim_start": 1.5,
+        "tone": {
+          "brightness": 0.01,
+          "contrast": 1.03,
+          "saturation": 1.0
+        },
+        "tags": [
+          "lifeofsmorris",
+          "nathanielonline"
+        ],
+        "collaborators": [
+          "lifeofsmorris"
+        ]
+      }
+    ]
   }
 ]

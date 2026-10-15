@@ -70,6 +70,14 @@ class Store:
             self.s3.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType="application/json",
                                CacheControl="no-store")
 
+    def delete_key(self, key):
+        if self.local:
+            p = os.path.join(self.local, key)
+            if os.path.exists(p):
+                os.remove(p)
+        else:
+            self.s3.delete_object(Bucket=self.bucket, Key=key)
+
     def delete_old(self, prefix, max_age_hours):
         """Delete objects under prefix older than max_age_hours. Returns how many were removed."""
         cutoff = time.time() - max_age_hours * 3600
@@ -94,13 +102,13 @@ class Store:
 
 def render_one(args):
     """Runs in a worker process. Returns the rendered file's path."""
-    src, slug, platform, v = args
+    src, slug, platform, v, strip = args
     name = cr.render_clip(
         src, slug, platform, cr.clean_hook(v.get("text", "")),
         hook_top=230, hook_size=62, hook_seconds=0,
         crop_factor=v.get("crop", 1.0), crop_x=v.get("crop_x", 0.5), crop_y=v.get("crop_y", 0.5),
         strip_lift=v.get("strip_lift"), strip_pos=v.get("strip_pos", "bottom"),
-        trim_start=v.get("trim_start", 0.0), tone=v.get("tone"))
+        trim_start=v.get("trim_start", 0.0), tone=v.get("tone"), strip=strip)
     return os.path.join(cr.CLIP_DIR, name)
 
 
@@ -109,14 +117,17 @@ def process_job(job, store, public_base, workers):
     url = job["url"]
     print(f"[render] {jid}: downloading {url}", flush=True)
     src, info = cr.download_clip(url)
-    platform = "kick" if "kick.com" in url else "twitch"
-    slug = cr.channel_slug_from(url, info, job.get("channel"))
+    platform = "kick" if "kick.com" in url else "twitch" if "twitch.tv" in url else "custom"
+    slug = cr.channel_slug_from(url, info, job.get("channel")) if platform != "custom" else ""
     footer = (job.get("footer") or "").strip()
     variants = job["variants"]
+    # strip for the bottom bar: None = platform strip (Kick/Twitch), "none", or {"label","text","color"}.
+    # A direct video file has no platform, so it defaults to no strip unless the job asks for one.
+    job_strip = job.get("strip", "none" if platform == "custom" else None)
     print(f"[render] {jid}: rendering {len(variants)} variant(s) as {slug}/{platform}", flush=True)
 
     with ProcessPoolExecutor(max_workers=max(1, min(workers, len(variants)))) as pool:
-        paths = list(pool.map(render_one, [(src, slug, platform, v) for v in variants]))
+        paths = list(pool.map(render_one, [(src, slug, platform, v, v.get("strip", job_strip)) for v in variants]))
 
     items = []
     for i, (v, path) in enumerate(zip(variants, paths)):
@@ -133,6 +144,13 @@ def process_job(job, store, public_base, workers):
     os.remove(src)
     # the manifest goes up last: the bot starts posting as soon as it appears
     store.put_json(f"manifests/{jid}.json", {"job": jid, "created": int(time.time()), "items": items})
+    # an original that was uploaded to our own bucket is no longer needed once every version is rendered
+    if job.get("delete_source", True) and url.startswith(public_base + "/"):
+        try:
+            store.delete_key(url[len(public_base) + 1:])
+            print(f"[render] {jid}: removed the uploaded original", flush=True)
+        except Exception as e:
+            print(f"[render] {jid}: could not remove the original: {type(e).__name__}", flush=True)
     print(f"[render] {jid}: done", flush=True)
 
 

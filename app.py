@@ -153,35 +153,42 @@ def ig_create_container(ig_account_id, token, media_url, caption, media_type="IM
 def ig_create_container_tagged(ig_account_id, token, media_url, caption, media_type="IMAGE", graph=None,
                                tags=None, collaborators=None):
     """Like ig_create_container, but also tags users and/or invites collaborators. If Instagram rejects the
-    tags (for example Reels may not accept them), retry without them. Returns (creation_id, error, note)."""
+    combination it falls back step by step (tag + collab, collab only, tag only, neither) so the post still goes out.
+    Returns (creation_id, error, note)."""
     g = graph or GRAPH
-    if not (tags or collaborators):
+    tags = [str(u).lstrip("@") for u in (tags or [])]
+    collabs = [str(u).lstrip("@") for u in (collaborators or [])]
+    if not (tags or collabs):
         cid, err = ig_create_container(ig_account_id, token, media_url, caption, media_type, graph)
         return cid, err, ""
     if media_type == "VIDEO":
-        payload = {"video_url": media_url, "media_type": "REELS", "caption": caption, "access_token": token}
+        base = {"video_url": media_url, "media_type": "REELS", "caption": caption, "access_token": token}
+        tag_json = json.dumps([{"username": u} for u in tags])      # Reels reject x/y coordinates
     else:
-        payload = {"image_url": media_url, "caption": caption, "access_token": token}
+        base = {"image_url": media_url, "caption": caption, "access_token": token}
+        tag_json = json.dumps([{"username": u, "x": 0.5, "y": 0.5} for u in tags])
+    attempts = []
+    if tags and collabs:
+        attempts.append(("tag + collab invite", {"user_tags": tag_json, "collaborators": json.dumps(collabs)}))
+    if collabs:
+        attempts.append(("collab invite only", {"collaborators": json.dumps(collabs)}))
     if tags:
-        if media_type == "VIDEO":   # Reels reject x/y coordinates (confirmed by a prepare-only probe); photos need them
-            payload["user_tags"] = json.dumps([{"username": str(u).lstrip("@")} for u in tags])
-        else:
-            payload["user_tags"] = json.dumps([{"username": str(u).lstrip("@"), "x": 0.5, "y": 0.5} for u in tags])
-    if collaborators:
-        payload["collaborators"] = json.dumps([str(u).lstrip("@") for u in collaborators])
-    result = requests.post(f"{g}/{ig_account_id}/media", data=payload, timeout=30).json()
-    if result.get("id"):
-        return result["id"], None, "tags/collaborators attached"
-    first_err = result.get("error", {}).get("message", str(result))
+        attempts.append(("tag only", {"user_tags": tag_json}))
+    errors = []
+    for label, extra in attempts:
+        result = requests.post(f"{g}/{ig_account_id}/media", data={**base, **extra}, timeout=30).json()
+        if result.get("id"):
+            note = f"attached: {label}" + (f" (dropped: {'; '.join(errors)[:120]})" if errors else "")
+            return result["id"], None, note
+        errors.append(f"{label}: {result.get('error', {}).get('message', str(result))[:70]}")
     cid, err = ig_create_container(ig_account_id, token, media_url, caption, media_type, graph)
-    note = f"posted WITHOUT tags: {first_err[:140]}" if cid else ""
-    return cid, err, note
+    return cid, err, (f"posted WITHOUT tag/collab: {'; '.join(errors)[:160]}" if cid else "")
 
 def ig_wait_ready(creation_id, token, media_type="IMAGE", graph=None):
     """Step 2: Instagram processes the media asynchronously; publishing early gives 'Media ID is not available'.
     Returns an error string, or None when it is ready."""
     g = graph or GRAPH
-    deadline = time.time() + (180 if media_type == "VIDEO" else 45)
+    deadline = time.time() + (300 if media_type == "VIDEO" else 45)
     while time.time() < deadline:
         st = requests.get(f"{g}/{creation_id}", params={"fields": "status_code", "access_token": token},
                           timeout=15).json().get("status_code")
@@ -2281,7 +2288,8 @@ def _run_jobs_once():
                 if cur.fetchone():
                     threading.Thread(target=_probe_worker, args=(job,), daemon=True).start()
                 continue
-            if not (isinstance(job.get("id"), str) and valid_clip_url(job.get("url", "")) and job.get("variants")):
+            url_ok = valid_clip_url(job.get("url", "")) or (job.get("render") == "remote" and str(job.get("url", "")).startswith("https://"))
+            if not (isinstance(job.get("id"), str) and url_ok and job.get("variants")):
                 print(f"[jobs] skipping malformed job {job.get('id')!r}")
                 continue
             cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
