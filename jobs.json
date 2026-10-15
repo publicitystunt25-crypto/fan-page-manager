@@ -1275,5 +1275,170 @@
       ],
       "start_after_minutes": 0
     }
+  },
+  {
+    "id": "adin_amanda_water_20261015",
+    "render": "remote",
+    "url": "https://kick.com/adinross/clips/clip_01M50VRSK8CRGGDQX6C5ET807E",
+    "footer": "",
+    "stagger_minutes": [
+      5,
+      10
+    ],
+    "variants": [
+      {
+        "page_ids": [
+          1
+        ],
+        "text": "Amanda explains why she spat water at Mysterious",
+        "caption": "Amanda explains why she spat water at Mysterious \ud83d\udc40",
+        "crop": 0.96,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_pos": "bottom",
+        "trim_start": 0,
+        "tone": {
+          "brightness": 0,
+          "contrast": 1,
+          "saturation": 1
+        }
+      },
+      {
+        "page_ids": [
+          2
+        ],
+        "text": "Why Amanda spat water at Mysterious",
+        "caption": "Why Amanda spat water at Mysterious",
+        "crop": 0.92,
+        "crop_x": 0.3,
+        "crop_y": 0.4,
+        "strip_pos": "top",
+        "trim_start": 0.5,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.03,
+          "saturation": 1.05
+        }
+      },
+      {
+        "page_ids": [
+          4
+        ],
+        "text": "Amanda on spitting water at Mysterious",
+        "caption": "Amanda on spitting water at Mysterious \ud83d\udc40",
+        "crop": 1.0,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_pos": "bottom",
+        "trim_start": 0,
+        "tone": {
+          "brightness": 0,
+          "contrast": 1,
+          "saturation": 1
+        }
+      },
+      {
+        "page_ids": [
+          10
+        ],
+        "text": "Amanda explains the water spit at Mysterious",
+        "caption": "Amanda explains the water spit at Mysterious",
+        "crop": 0.94,
+        "crop_x": 0.6,
+        "crop_y": 0.45,
+        "strip_pos": "bottom",
+        "trim_start": 0.3,
+        "tone": {
+          "brightness": 0.01,
+          "contrast": 1.02,
+          "saturation": 1.03
+        }
+      },
+      {
+        "page_ids": [
+          14
+        ],
+        "text": "Why Amanda spat water in Mysterious's face",
+        "caption": "Why Amanda spat water in Mysterious's face",
+        "crop": 0.9,
+        "crop_x": 0.4,
+        "crop_y": 0.5,
+        "strip_pos": "top",
+        "trim_start": 0.4,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.04,
+          "saturation": 1.04
+        }
+      },
+      {
+        "page_ids": [
+          19
+        ],
+        "text": "Amanda: \"I wanna spit it in her face\"",
+        "caption": "Amanda: \"I wanna spit it in her face\"",
+        "crop": 0.97,
+        "crop_x": 0.5,
+        "crop_y": 0.4,
+        "strip_pos": "bottom",
+        "trim_start": 0.2,
+        "tone": {
+          "brightness": 0,
+          "contrast": 1.02,
+          "saturation": 1.0
+        }
+      },
+      {
+        "page_ids": [
+          25
+        ],
+        "text": "Amanda breaks down spitting water at Mysterious",
+        "caption": "Amanda breaks down spitting water at Mysterious \ud83d\udc40",
+        "crop": 0.93,
+        "crop_x": 0.7,
+        "crop_y": 0.5,
+        "strip_pos": "bottom",
+        "trim_start": 0.5,
+        "tone": {
+          "brightness": 0.03,
+          "contrast": 1.03,
+          "saturation": 1.06
+        }
+      },
+      {
+        "page_ids": [
+          26
+        ],
+        "text": "Amanda explains why she spat water at Mysterious",
+        "caption": "Amanda explains why she spat water at Mysterious",
+        "crop": 0.95,
+        "crop_x": 0.45,
+        "crop_y": 0.55,
+        "strip_pos": "top",
+        "trim_start": 0.1,
+        "tone": {
+          "brightness": 0.01,
+          "contrast": 1.0,
+          "saturation": 1.02
+        }
+      },
+      {
+        "page_ids": [
+          28
+        ],
+        "text": "The reason Amanda spat water at Mysterious",
+        "caption": "The reason Amanda spat water at Mysterious \ud83d\udc40",
+        "crop": 0.91,
+        "crop_x": 0.55,
+        "crop_y": 0.5,
+        "strip_pos": "bottom",
+        "trim_start": 0.3,
+        "tone": {
+          "brightness": 0.02,
+          "contrast": 1.05,
+          "saturation": 1.05
+        }
+      }
+    ]
   }
 ]
