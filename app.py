@@ -2189,8 +2189,10 @@ def _wipe_worker(job):
     dmin, dmax = (spec.get("delay") or [20, 50])[:2]
     gap = float(spec.get("batch_gap_minutes", 40)) * 60
     cooldown = float(spec.get("cooldown_minutes", 120)) * 60
+    max_total = int(spec["max_total"]) if spec.get("max_total") else None   # optional: stop after this many deletions
     total_deleted, limit_hits, passes = 0, 0, 0
     per_page_done = {}
+    errors = []
     try:
         cutoff = datetime.strptime(spec["before"], "%Y-%m-%dT%H:%M:%S%z")
         time.sleep(float(spec.get("start_after_minutes", 0)) * 60)
@@ -2222,12 +2224,15 @@ def _wipe_worker(job):
                 if hit_limit:
                     continue
                 gone = []
-                for mid in todo[:per_batch]:
+                allowed = per_batch if max_total is None else min(per_batch, max_total - total_deleted)
+                for mid in todo[:max(allowed, 0)]:
                     d = requests.delete(f"{g}/{mid}", params={"access_token": page["page_access_token"]}, timeout=30).json()
                     if d.get("success"):
                         gone.append(mid)
                     else:
                         msg = str((d.get("error") or {}).get("message", d)).lower()
+                        if len(errors) < 5:
+                            errors.append(f"{mid}: {msg[:120]}")
                         if any(h in msg for h in LIMIT_HINTS):
                             hit_limit = True
                             limit_hits += 1
@@ -2249,11 +2254,11 @@ def _wipe_worker(job):
                      "per_page": per_page_done}, separators=(",", ":")))
             except Exception:
                 pass
-            if remaining <= 0:
+            if remaining <= 0 or (max_total is not None and total_deleted >= max_total):
                 break
             time.sleep(cooldown if hit_limit else gap)
         summary = {"deleted": total_deleted, "remaining": remaining, "passes": passes, "limit_hits": limit_hits,
-                   "per_page": per_page_done}
+                   "per_page": per_page_done, "errors": errors}
     except Exception as e:
         summary = {"failed": type(e).__name__, "deleted": total_deleted}
     text = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))

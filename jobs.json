@@ -1259,5 +1259,21 @@
         "text": "resume"
       }
     ]
+  },
+  {
+    "id": "wipe_test3_hottakez01_20261015",
+    "wipe": {
+      "page_ids": [
+        1
+      ],
+      "before": "2026-10-14T23:46:21+0000",
+      "per_batch": 3,
+      "max_total": 3,
+      "delay": [
+        20,
+        40
+      ],
+      "start_after_minutes": 0
+    }
   }
 ]
