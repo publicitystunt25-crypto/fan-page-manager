@@ -43,7 +43,9 @@ def list_clips(slug):
     return r.json().get("clips", [])
 
 
-def pick_clip(cfg, seen, hour):
+def pick_clips(cfg, seen, hour, limit=5):
+    """Up to `limit` suitable clips, best candidate first (rotating through the channels, newest first)."""
+    found = []
     channels = cfg["channels"]
     order = channels[hour % len(channels):] + channels[:hour % len(channels)]   # rotate so each channel gets turns
     now = datetime.now(timezone.utc)
@@ -71,8 +73,10 @@ def pick_clip(cfg, seen, hour):
             if why:
                 continue
             c["_slug"] = slug
-            return c
-    return None
+            found.append(c)
+            if len(found) >= limit:
+                return found
+    return found
 
 
 class CopyFailed(Exception):
@@ -150,34 +154,58 @@ def main():
         return 0
     store = rw.Store()
     seen = set(store.get_json("auto/seen.json", []) or [])
-    clip = pick_clip(cfg, seen, datetime.now(timezone.utc).hour)
-    if not clip:
+    candidates = pick_clips(cfg, seen, datetime.now(timezone.utc).hour)
+    if not candidates:
         print("[auto] no suitable new clip this hour")
         return 0
-    url = f"https://kick.com/{clip['_slug']}/clips/{clip['id']}"
-    print(f"[auto] picked {url}  {clip.get('duration')}s  {clip['title']!r}", flush=True)
     if dry:
+        for c in candidates:
+            print(f"[auto] candidate https://kick.com/{c['_slug']}/clips/{c['id']}  {c.get('duration')}s  {c['title']!r}")
         return 0
-    seen.add(clip["id"])                       # mark first: a clip that fails to render is not retried every hour
-    store.put_json("auto/seen.json", sorted(seen)[-500:])
 
     cfg_pb = json.load(open(rw.CONFIG_FILE, encoding="utf-8"))
     public_base = (os.environ.get("R2_PUBLIC_BASE") or cfg_pb.get("public_base") or "").rstrip("/")
-    jid = f"auto_{clip['id']}"
-    try:
-        from faster_whisper import WhisperModel
-        src, _ = cr.download_clip(url)
-        wav = src + ".wav"
-        tw.extract_audio(src, wav)
-        tr = tw.transcribe(wav, WhisperModel(tw.MODEL, device="cpu", compute_type="int8"))
-        for p in (src, wav):
-            if os.path.exists(p):
-                os.remove(p)
-        text = (clip["title"] + " " + tr["text"]).lower()
+    from faster_whisper import WhisperModel
+    model = WhisperModel(tw.MODEL, device="cpu", compute_type="int8")
+    min_words = int(cfg.get("min_speech_words", 15))
+    clip = tr = jid = url = None
+    for cand in candidates:
+        url = f"https://kick.com/{cand['_slug']}/clips/{cand['id']}"
+        print(f"[auto] checking {url}  {cand.get('duration')}s  {cand['title']!r}", flush=True)
+        seen.add(cand["id"])                   # mark first: a clip that fails is not retried every hour
+        store.put_json("auto/seen.json", sorted(seen)[-500:])
+        try:
+            src, _ = cr.download_clip(url)
+            wav = src + ".wav"
+            tw.extract_audio(src, wav)
+            tr = tw.transcribe(wav, model)
+            for p in (src, wav):
+                if os.path.exists(p):
+                    os.remove(p)
+        except Exception:
+            print(f"[auto] {cand['id']} could not be read:\n{traceback.format_exc()}", flush=True)
+            note_run(store, cand, "failed", traceback.format_exc()[-400:])
+            tr = None
+            continue
+        text = (cand["title"] + " " + tr["text"]).lower()
         hit = [w for w in cfg.get("skip_words", []) if w in text]
         if hit:
             print(f"[auto] skipped: blocked word in the speech ({hit[0]!r})")
-            return 0
+            tr = None
+            continue
+        if len(tr["text"].split()) < min_words:
+            print(f"[auto] skipped: too little speech ({len(tr['text'].split())} words) to write a real caption")
+            tr = None
+            continue
+        clip = cand
+        break
+    if not clip:
+        note_run(store, candidates[0], "skipped: nothing worth posting", f"{len(candidates)} candidates checked")
+        print("[auto] none of the candidates was worth posting")
+        return 0
+
+    jid = f"auto_{clip['id']}"
+    try:
         store.put_json(f"transcripts/{jid}.json", {**tr, "job": jid, "url": url, "title": clip["title"]})
         copy = write_copy(clip, tr["text"], len(cfg["page_ids"]))
         job = {"id": jid, "url": url, "render": "remote", "footer": "", "variants": make_variants(clip, cfg, copy)}
