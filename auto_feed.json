@@ -1,14 +1,86 @@
 {
   "enabled": true,
-  "channels": ["adinross", "deenthegreat"],
-  "page_ids": [1, 2, 4, 10, 14, 19, 25, 26, 28],
-  "stagger_minutes": [1, 3],
+  "channels": [
+    "adinross",
+    "deenthegreat",
+    "blueface"
+  ],
+  "page_ids": [
+    1,
+    2,
+    4,
+    10,
+    14,
+    19,
+    25,
+    26,
+    28
+  ],
+  "stagger_minutes": [
+    1,
+    3
+  ],
   "max_age_hours": 6,
   "min_title_chars": 15,
   "min_seconds": 10,
   "max_seconds": 90,
   "min_views": 0,
   "min_speech_words": 15,
-  "skip_title_words": ["nigg", "fuck", "fuk", "fck", "shit", "shtt", "bitch", "pussy", "dick", "whore", "slut", "cum", "304", "hoe", "thot", "tranny", "simp"],
-  "skip_words": ["nigger", "faggot", "tranny", "retard", "kill myself", "suicide", "rape"]
+  "skip_title_words": [
+    "nigg",
+    "fuck",
+    "fuk",
+    "fck",
+    "shit",
+    "shtt",
+    "bitch",
+    "pussy",
+    "dick",
+    "whore",
+    "slut",
+    "cum",
+    "304",
+    "hoe",
+    "thot",
+    "tranny",
+    "simp"
+  ],
+  "skip_words": [
+    "nigger",
+    "faggot",
+    "tranny",
+    "retard",
+    "kill myself",
+    "suicide",
+    "rape"
+  ],
+  "channel_settings": {
+    "blueface": {
+      "title_optional": true,
+      "api_sort": "view",
+      "api_time": "day",
+      "min_age_hours": 2,
+      "max_age_hours": 10,
+      "min_speech_words": 20,
+      "frame_check": true,
+      "skip_words_extra": [
+        "naked",
+        "nude",
+        "sex",
+        "pussy",
+        "dick",
+        "tits",
+        "titties",
+        "boobs",
+        "stripper",
+        "thong",
+        "onlyfans",
+        "lingerie",
+        "bathtub",
+        "blowjob",
+        "porn",
+        "cum"
+      ]
+    }
+  }
 }
