@@ -4,6 +4,9 @@ name: Auto feed
 # every page and hand it to the bot through auto/queue.json in R2. Turn it off with "enabled": false in auto_feed.json.
 # Started on time by cron-job.org (GitHub's own schedule runs late), or by hand from the Actions tab.
 on:
+  push:
+    paths:
+      - "auto_trigger.txt"   # pushing this file starts a run without any token
   workflow_dispatch:
     inputs:
       dry_run:
