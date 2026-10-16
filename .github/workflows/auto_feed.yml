@@ -2,9 +2,8 @@ name: Auto feed
 
 # Every hour: pick the newest decent clip from the channels in auto_feed.json, transcribe, write copy, render for
 # every page and hand it to the bot through auto/queue.json in R2. Turn it off with "enabled": false in auto_feed.json.
+# Started on time by cron-job.org (GitHub's own schedule runs late), or by hand from the Actions tab.
 on:
-  schedule:
-    - cron: "7 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
