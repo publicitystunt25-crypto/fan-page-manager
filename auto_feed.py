@@ -60,7 +60,7 @@ def pick_clip(cfg, seen, hour):
                 break                                    # newest-first: everything after this is older still
             if c["id"] in seen:
                 why = "already used"
-            elif len(title) < cfg.get("min_title_chars", 15):
+            elif len(title) < cfg.get("min_title_chars", 15) or len(title.split()) < 3:
                 why = "title too short"
             elif not (cfg.get("min_seconds", 10) <= dur <= cfg.get("max_seconds", 90)):
                 why = f"length {dur}s"
@@ -73,6 +73,10 @@ def pick_clip(cfg, seen, hour):
             c["_slug"] = slug
             return c
     return None
+
+
+class CopyFailed(Exception):
+    pass
 
 
 def write_copy(clip, transcript, n):
@@ -99,9 +103,11 @@ def write_copy(clip, transcript, n):
             data = [v for v in data if v.get("overlay") and v.get("caption")]
             if len(data) >= n:
                 return data[:n]
-            print(f"[auto] copywriter returned {len(data)} of {n} versions, using the title")
+            raise CopyFailed(f"copywriter returned {len(data)} of {n} versions")
+        except CopyFailed:
+            raise
         except Exception as e:
-            print(f"[auto] copywriter failed ({type(e).__name__}), using the title")
+            raise CopyFailed(f"{type(e).__name__}: {str(e)[:200]}")
     base = cr.clean_hook(title) or title[:60]
     return [{"overlay": base, "caption": title} for _ in range(n)]
 
@@ -118,6 +124,15 @@ def make_variants(clip, cfg, copy):
             "tone": {"brightness": round(rnd.uniform(0.0, 0.03), 2), "contrast": round(rnd.uniform(1.0, 1.05), 2),
                      "saturation": round(rnd.uniform(1.0, 1.06), 2)}})
     return variants
+
+
+def note_run(store, clip, status, detail=""):
+    """Last run's outcome, readable at <public base>/auto/last_run.json."""
+    try:
+        store.put_json("auto/last_run.json", {"at": int(time.time()), "clip": clip["id"], "title": clip["title"],
+                                              "status": status, "detail": detail})
+    except Exception:
+        pass
 
 
 def main():
@@ -160,13 +175,21 @@ def main():
         copy = write_copy(clip, tr["text"], len(cfg["page_ids"]))
         job = {"id": jid, "url": url, "render": "remote", "footer": "", "variants": make_variants(clip, cfg, copy)}
         rw.process_job(job, store, public_base, int(os.environ.get("RENDER_WORKERS", "3")))
+    except CopyFailed as e:
+        seen.discard(clip["id"])               # not the clip's fault: let the next hour try it again
+        store.put_json("auto/seen.json", sorted(seen)[-500:])
+        note_run(store, clip, "skipped: no copy", str(e))
+        print(f"[auto] {jid} skipped, the copywriter failed: {e}", flush=True)
+        return 1
     except Exception:
         print(f"[auto] {jid} FAILED:\n{traceback.format_exc()}", flush=True)
+        note_run(store, clip, "failed", traceback.format_exc()[-400:])
         return 1
     queue = store.get_json("auto/queue.json", []) or []
     queue.append({"id": jid, "created": int(time.time()), "stagger_minutes": cfg.get("stagger_minutes", [3, 6]),
                   "title": clip["title"], "channel": clip["_slug"]})
     store.put_json("auto/queue.json", queue[-60:])
+    note_run(store, clip, "queued", "copy by " + ("claude" if os.environ.get("ANTHROPIC_API_KEY") else "title (no key)"))
     print(f"[auto] queued {jid} for the bot", flush=True)
     return 0
 
