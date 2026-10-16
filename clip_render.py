@@ -144,6 +144,11 @@ def clean_hook(text):
     text = re.sub(r"[^\x20-\x7E -ɏ‘’“”–—…]", "", text or "")
     return re.sub(r"\s+", " ", text).strip()[:80]
 
+def _reply_text(msg):
+    """Text of a model reply, skipping thinking blocks."""
+    return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+
+
 def generate_clip_hook(title, channel_name, hint=""):
     """Short on-screen hook for the first seconds. Returns '' when there is nothing good to show."""
     fallback = clean_hook(title) if title and len(title) <= 45 else ""
@@ -160,7 +165,7 @@ def generate_clip_hook(title, channel_name, hint=""):
                 f"streamer {channel_name}. Clip title: {title}. {('Context: ' + hint) if hint else ''}\n"
                 "Rules: 2 to 6 words, curiosity or tension (e.g. 'Wait for the ending'), plain text only, "
                 "no emoji, no hashtags, no quotes. Output only the hook."}])
-        return clean_hook(msg.content[0].text) or fallback
+        return clean_hook(_reply_text(msg)) or fallback
     except Exception as e:
         print(f"[hook] {e}")
         return fallback
@@ -324,7 +329,7 @@ def generate_clip_caption(title, channel_name, platform, handle_tag, hint=""):
                 f"Clip title: {title}. {('Extra context: ' + hint) if hint else ''}\n"
                 "One punchy hook line, optionally one short follow-up line, then 4-6 relevant hashtags. "
                 "No quotes around it, no @mentions. Output only the caption."}])
-        text = msg.content[0].text.strip()
+        text = _reply_text(msg).strip()
         return f"{text}\n\n{handle_tag}"
     except Exception as e:
         print(f"[caption] {e}")
