@@ -87,7 +87,7 @@ def write_copy(clip, transcript, n):
         try:
             import anthropic
             msg = anthropic.Anthropic(api_key=key).messages.create(
-                model="claude-haiku-5-5", max_tokens=1500,
+                model="claude-haiku-5-5", max_tokens=4000,
                 messages=[{"role": "user", "content":
                     f"Instagram Reels from a Kick clip of the streamer '{clip['_slug']}'.\n"
                     f"Clip title: {title}\nTranscript (speech-to-text, may contain errors): {transcript[:1500]}\n\n"
@@ -98,7 +98,7 @@ def write_copy(clip, transcript, n):
                     "text, no insults or claims about a real person that the clip does not show. Every version must read "
                     "differently from the others.\n"
                     'Output only JSON: {"versions":[{"overlay":"...","caption":"..."}]}'}])
-            raw = msg.content[0].text
+            raw = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")   # skip any thinking block
             data = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])["versions"]
             data = [v for v in data if v.get("overlay") and v.get("caption")]
             if len(data) >= n:
