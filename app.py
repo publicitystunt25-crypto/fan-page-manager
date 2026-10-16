@@ -1983,6 +1983,13 @@ def _run_remote_job(job, delay=(30, 90), wait_hours=3):
         time.sleep(60)
     if not manifest:
         return f"failed: rendered videos did not arrive within {wait_hours} hours"
+    start_at = job.get("start_at")               # e.g. "2026-10-16T06:30:00+00:00": hold the posting until then
+    if start_at:
+        from datetime import datetime
+        wait = datetime.fromisoformat(start_at).timestamp() - time.time()
+        if wait > 0:
+            print(f"[jobs] {job['id']}: videos ready, posting starts in {int(wait)}s")
+            time.sleep(wait)
     # past this point a restart must never re-post; the claim is atomic so overlapping copies can't both post
     if not _claim_setting(f"job_{job['id']}_posting"):
         return "skipped: another process is already posting this job"

@@ -235,6 +235,10 @@ def main():
     if not cfg.get("enabled", True):
         print("[auto] disabled in auto_feed.json")
         return 0
+    pause = cfg.get("pause_until")             # skip runs until this time (UTC), e.g. while a hand-queued clip posts
+    if pause and datetime.now(timezone.utc) < datetime.fromisoformat(pause.replace("Z", "+00:00")):
+        print(f"[auto] paused until {pause}")
+        return 0
     store = rw.Store()
     seen = set(store.get_json("auto/seen.json", []) or [])
     candidates = pick_clips(cfg, seen, datetime.now(timezone.utc).hour)
