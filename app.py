@@ -2271,7 +2271,7 @@ def _wipe_worker(job):
 def _delete_posts_worker(job):
     """Deletes exactly the posts named in job["delete_posts"] = {"posts": [{"page_id": 1, "ig_post_id": "..."}],
     "delay": [20, 40]}. Every id must be a post the bot itself made (it is checked against post_log), so nothing
-    else can be removed this way. Stops at the first 'too many actions' answer and says how far it got."""
+    else can be removed this way. A failure (e.g. 'too many actions' on one account) is reported and the other pages still go ahead."""
     spec = job["delete_posts"]
     dmin, dmax = (spec.get("delay") or [20, 40])[:2]
     done, failed, skipped = [], [], []
@@ -2305,9 +2305,7 @@ def _delete_posts_worker(job):
                     pass
             else:
                 msg = str((d.get("error") or {}).get("message", d))
-                failed.append(f"{page['page_name']}: {msg[:100]}")
-                if any(h in msg.lower() for h in LIMIT_HINTS):
-                    break
+                failed.append(f"{page['page_name']}: {msg[:100]}")   # the limit is per account: carry on with the other pages
             time.sleep(random.uniform(float(dmin), float(dmax)))
         summary = {"deleted": done, "failed": failed, "skipped": skipped}
     except Exception as e:
