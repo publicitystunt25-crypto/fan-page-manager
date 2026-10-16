@@ -8,6 +8,6 @@
   "min_seconds": 10,
   "max_seconds": 90,
   "min_views": 0,
-  "skip_title_words": ["nigg", "fuck", "fuk", "fck", "shit", "shtt", "bitch", "pussy", "dick", "whore", "slut", "cum"],
+  "skip_title_words": ["nigg", "fuck", "fuk", "fck", "shit", "shtt", "bitch", "pussy", "dick", "whore", "slut", "cum", "304", "hoe", "thot", "tranny", "simp"],
   "skip_words": ["nigger", "faggot", "tranny", "retard", "kill myself", "suicide", "rape"]
 }
