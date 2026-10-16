@@ -106,11 +106,11 @@ def check_text(clip, transcript, key):
         msg = anthropic.Anthropic(api_key=key).messages.create(
             model="claude-haiku-5-5", max_tokens=1000, messages=[{"role": "user", "content":
                 f"A livestream clip. Title: {clip['title']}\nSpeech-to-text transcript (may contain errors): {transcript[:1800]}\n\n"
-                "Decide whether it is suitable to repost on general-audience Instagram clip pages. It is NOT suitable if "
-                "the title or speech: is sexual or sexualizes someone, uses slurs or hate, insults or demeans a real person "
-                "(including insulting slang for a person), mocks someone's race, body or sexuality, shows violence, drugs or "
-                "self-harm, shares private information, or involves a child. Ordinary swearing and trash talk in a "
-                "comedic or competitive setting are fine.\n"
+                "Decide whether it can be reposted on entertainment clip pages. These pages are edgy: crude, risky or "
+                "provocative titles, profanity, slang, trash talk, innuendo and drama are all FINE. It is NOT suitable "
+                "only if the title or speech: contains explicit sexual content or nudity, uses slurs or hate speech, "
+                "targets one specific real person mainly to insult or humiliate them, shows violence or gore, glorifies "
+                "self-harm, shares private information such as addresses or phone numbers, or involves a child.\n"
                 'Output only JSON: {"safe": true or false, "reason": "short reason"}'}])
         raw = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
         data = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
