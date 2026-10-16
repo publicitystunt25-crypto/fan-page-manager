@@ -23,7 +23,7 @@ import clip_render as cr
 import render_worker as rw
 import transcribe_worker as tw
 
-CONFIG = os.path.join(rw.HERE, "auto_feed.json")
+CONFIG = os.environ.get("AUTO_FEED_CONFIG") or os.path.join(rw.HERE, "auto_feed.json")
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
 
@@ -257,15 +257,11 @@ def main():
     public_base = (os.environ.get("R2_PUBLIC_BASE") or cfg_pb.get("public_base") or "").rstrip("/")
     from faster_whisper import WhisperModel
     model = WhisperModel(tw.MODEL, device="cpu", compute_type="int8")
-    clip = tr = jid = url = None
-    for cand in candidates:
+    def evaluate(cand):
+        """Download, transcribe and vet one candidate. Returns (cand, transcript or None, 'ok' or why not)."""
         url = f"https://kick.com/{cand['_slug']}/clips/{cand['id']}"
         s = cand["_settings"]
-        print(f"[auto] checking {url}  {cand.get('duration')}s  {cand['title']!r}", flush=True)
-        seen.add(cand["id"])                   # mark first: a clip that fails is not retried every hour
-        store.put_json("auto/seen.json", sorted(seen)[-500:])
         src = wav = None
-        tr = None
         try:
             src, _ = cr.download_clip(url)
             wav = src + ".wav"
@@ -274,33 +270,42 @@ def main():
             text = (cand["title"] + " " + tr["text"]).lower()
             hit = [w for w in s["skip_words"] if w in text]
             if hit:
-                print(f"[auto] skipped: blocked word in the speech ({hit[0]!r})")
-                tr = None
-            elif len(tr["text"].split()) < int(s.get("min_speech_words", 15)):
-                print(f"[auto] skipped: too little speech ({len(tr['text'].split())} words) to write a real caption")
-                tr = None
-            elif not (verdict := check_text(cand, tr["text"], os.environ.get("ANTHROPIC_API_KEY")))[0]:
-                print(f"[auto] skipped by the content check: {verdict[1]!r}")
-                tr = None
-            elif s.get("frame_check"):
+                return cand, None, f"blocked word in the speech ({hit[0]!r})"
+            if len(tr["text"].split()) < int(s.get("min_speech_words", 15)):
+                return cand, None, f"too little speech ({len(tr['text'].split())} words)"
+            ok, why = check_text(cand, tr["text"], os.environ.get("ANTHROPIC_API_KEY"))
+            if not ok:
+                return cand, None, f"content check: {why}"
+            if s.get("frame_check"):
                 safe, scene, reason = check_frames(src, cand.get("duration"), os.environ.get("ANTHROPIC_API_KEY"))
-                print(f"[auto] frame check: safe={safe}  {reason!r}  scene={scene!r}", flush=True)
-                if safe:
-                    cand["_scene"] = scene
-                else:
-                    tr = None
+                if not safe:
+                    return cand, None, f"frame check: {reason} ({scene})"
+                cand["_scene"] = scene
+            return cand, tr, "ok"
         except Exception:
             print(f"[auto] {cand['id']} could not be read:\n{traceback.format_exc()}", flush=True)
-            note_run(store, cand, "failed", traceback.format_exc()[-400:])
-            tr = None
+            return cand, None, "could not be read"
         finally:
             for p in (src, wav):
                 if p and os.path.exists(p):
                     os.remove(p)
-        if tr is None:
-            continue
-        clip = cand
-        break
+
+    # all candidates are checked side by side; the first one (best-ranked) that passes is used
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(3, len(candidates))) as pool:
+        results = list(pool.map(evaluate, candidates))
+    clip = tr = None
+    for cand, t, why in results:
+        print(f"[auto] {cand['id']} {cand['title']!r}: {why}", flush=True)
+        if t is not None and clip is None:
+            clip, tr = cand, t
+        if t is None:
+            seen.add(cand["id"])               # a clip that failed its checks is not looked at again
+    if clip:
+        seen.add(clip["id"])                   # the one used; passing-but-unused candidates stay available
+    store.put_json("auto/seen.json", sorted(seen)[-500:])
+    url = f"https://kick.com/{clip['_slug']}/clips/{clip['id']}" if clip else None
+    jid = None
     if not clip:
         note_run(store, candidates[0], "skipped: nothing worth posting", f"{len(candidates)} candidates checked")
         print("[auto] none of the candidates was worth posting")
