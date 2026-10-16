@@ -90,13 +90,20 @@ def write_copy(clip, transcript, n):
                 model="claude-haiku-5-5", max_tokens=4000,
                 messages=[{"role": "user", "content":
                     f"Instagram Reels from a Kick clip of the streamer '{clip['_slug']}'.\n"
-                    f"Clip title: {title}\nTranscript (speech-to-text, may contain errors): {transcript[:1500]}\n\n"
+                    f"Clip title: {title}\nTranscript (speech-to-text, may contain errors): {transcript[:1800]}\n\n"
                     f"Write {n} different versions. Each has an 'overlay' (on-screen text, 4 to 9 words, plain text) and a "
                     "'caption' (one or two short sentences, at most one emoji).\n"
-                    "Rules: say only what the title or transcript supports, never invent facts or names, do not name anyone "
-                    "that is not in the title or the streamer's own name, no @mentions, no hashtags, no quotes around the "
-                    "text, no insults or claims about a real person that the clip does not show. Every version must read "
-                    "differently from the others.\n"
+                    "Make each one SPECIFIC: use a concrete detail from the transcript or title - what was said, what the "
+                    "argument or moment is about, a short quote of up to six words, who is involved if the title names them. "
+                    "Vary the style across versions: some a question, some a plain statement, some a short quote, some a "
+                    "reaction. A viewer who has not seen the clip should know what it is about.\n"
+                    "Rules: say only what the title or transcript supports; never invent facts, names or outcomes. Do NOT "
+                    "mention the stream, Kick, 'the full clip', 'watch till the end' or 'part 2'. Do not use filler like "
+                    "'chaos', 'no notes', 'you have to see this', 'things got heated' unless the clip clearly shows it. "
+                    "If the transcript is thin or unclear, stick to what the title says. Do not name anyone who is not "
+                    "in the title or the streamer's own name, no @mentions, no hashtags, no quotes around the whole text, "
+                    "no insults or claims about a real person that the clip does not show, no profanity. Every version must "
+                    "read differently from the others.\n"
                     'Output only JSON: {"versions":[{"overlay":"...","caption":"..."}]}'}])
             raw = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")   # skip any thinking block
             data = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])["versions"]
