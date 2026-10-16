@@ -1,10 +1,11 @@
 name: Keep the bot awake
 
-# Render's free plan puts the bot to sleep after ~15 minutes without a request, which stops posting and analytics.
-# A request every 10 minutes keeps it up.
+# Render's free plan puts the bot to sleep after ~15 minutes without a request, which stops posting.
+# The auto feed starts at :07, renders for ~5 minutes and the bot then posts for up to ~27 minutes, so the bot is pinged
+# every 8 minutes from :05 to :45 each hour and left alone for the rest.
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "5-45/8 * * * *"
   workflow_dispatch:
 
 jobs:
