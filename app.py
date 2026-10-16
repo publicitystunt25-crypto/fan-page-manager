@@ -2268,6 +2268,57 @@ def _wipe_worker(job):
     except Exception as e:
         print(f"[wipe] could not store result: {type(e).__name__}")
 
+def _delete_posts_worker(job):
+    """Deletes exactly the posts named in job["delete_posts"] = {"posts": [{"page_id": 1, "ig_post_id": "..."}],
+    "delay": [20, 40]}. Every id must be a post the bot itself made (it is checked against post_log), so nothing
+    else can be removed this way. Stops at the first 'too many actions' answer and says how far it got."""
+    spec = job["delete_posts"]
+    dmin, dmax = (spec.get("delay") or [20, 40])[:2]
+    done, failed, skipped = [], [], []
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT ig_post_id FROM post_log WHERE ig_post_id IS NOT NULL")
+        bot_posts = {r["ig_post_id"] for r in cur.fetchall()}
+        ids = sorted({int(p["page_id"]) for p in spec["posts"]})
+        cur.execute("SELECT id, page_name, page_access_token, auth_type FROM fan_pages WHERE id = ANY(%s)", (ids,))
+        pages = {r["id"]: r for r in cur.fetchall()}
+        cur.close()
+        conn.close()
+        for p in spec["posts"]:
+            mid, page = str(p["ig_post_id"]), pages.get(int(p["page_id"]))
+            if not page or mid not in bot_posts:
+                skipped.append(mid)
+                continue
+            g = _graph_for(page.get("auth_type"))
+            d = requests.delete(f"{g}/{mid}", params={"access_token": page["page_access_token"]}, timeout=30).json()
+            if d.get("success"):
+                done.append(f"{page['page_name']}")
+                try:
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM post_metrics WHERE ig_media_id = %s", (mid,))
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                except Exception:
+                    pass
+            else:
+                msg = str((d.get("error") or {}).get("message", d))
+                failed.append(f"{page['page_name']}: {msg[:100]}")
+                if any(h in msg.lower() for h in LIMIT_HINTS):
+                    break
+            time.sleep(random.uniform(float(dmin), float(dmax)))
+        summary = {"deleted": done, "failed": failed, "skipped": skipped}
+    except Exception as e:
+        summary = {"failed": [type(e).__name__], "deleted": done}
+    text = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+    print(f"[delete-posts] {job['id']}: {text[:300]}")
+    try:
+        _set_setting(f"job_{job['id']}_result", text)
+    except Exception as e:
+        print(f"[delete-posts] could not store result: {type(e).__name__}")
+
 def _demographics_worker(job):
     """READ-ONLY. Country breakdown of each page's followers and of the people its posts reached.
     job["demographics"] = {"page_ids": [..], "breakdown": "country"}"""
@@ -2436,6 +2487,12 @@ def _run_jobs_once():
                                ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
                 if cur.fetchone():
                     threading.Thread(target=_audit_worker, args=(job,), daemon=True).start()
+                continue
+            if isinstance(job.get("delete_posts"), dict) and isinstance(job.get("id"), str):
+                cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
+                               ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
+                if cur.fetchone():
+                    threading.Thread(target=_delete_posts_worker, args=(job,), daemon=True).start()
                 continue
             if isinstance(job.get("probe"), dict) and isinstance(job.get("id"), str):
                 cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
