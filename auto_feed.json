@@ -2,7 +2,7 @@
   "enabled": true,
   "channels": ["adinross", "deenthegreat"],
   "page_ids": [1, 2, 4, 10, 14, 19, 25, 26, 28],
-  "stagger_minutes": [3, 6],
+  "stagger_minutes": [1, 3],
   "max_age_hours": 6,
   "min_title_chars": 15,
   "min_seconds": 10,
