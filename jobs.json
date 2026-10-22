@@ -10,5 +10,18 @@
         "@khoatic305": "@khaotic305"
       }
     }
+  },
+  {
+    "id": "fix_turk_username_20261022",
+    "fix_schedule": {
+      "id": "auto_sub_1792692424_40bb07",
+      "tags": {
+        "therealhotboyturk": "originalhotboyturk",
+        "originalhotboyturl": "originalhotboyturk"
+      },
+      "text": {
+        "@therealhotboyturk": "@originalhotboyturk"
+      }
+    }
   }
 ]
