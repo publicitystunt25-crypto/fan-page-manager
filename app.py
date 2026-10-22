@@ -2981,10 +2981,13 @@ def _ig_token_refresh_loop():
 
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
-init_db()
-_recover_interrupted_clips()
-_apply_page_names()
-_run_jobs_once()
+# Startup steps run one at a time and a failure does not stop the bot: with a read-only database (for example when the
+# database provider has switched it to read-only) the bot still starts, so the upload page and the read-only routes work.
+for _step in (init_db, _recover_interrupted_clips, _apply_page_names, _run_jobs_once):
+    try:
+        _step()
+    except Exception as _e:
+        print(f"[startup] {_step.__name__} failed: {type(_e).__name__}: {str(_e)[:160]} - starting anyway", flush=True)
 threading.Thread(target=_analytics_loop, daemon=True).start()
 threading.Thread(target=_clip_queue_loop, daemon=True).start()
 threading.Thread(target=_ig_token_refresh_loop, daemon=True).start()
