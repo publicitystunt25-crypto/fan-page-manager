@@ -3013,6 +3013,7 @@ button:disabled{opacity:.5}.row{display:flex;gap:8px}.row>*{flex:1}.pages label{
   <label>Pages to post on <small>posted in the order you tick them; each page is limited to __CAP__ posts a day. A page that is off is switched on when you submit.</small></label><div class="pages" id="pages"></div>
   <label for="gap">Hours between pages <small>1 = one page every hour, the first as soon as it is rendered. 0 = all within a few minutes. 0.25 to 24.</small></label>
   <input id="gap" type="number" min="0" max="24" step="0.25" value="1"><div class="pv" id="plan"></div>
+  <label style="display:flex;gap:10px;align-items:flex-start;font-weight:400;margin-top:16px"><input id="uniq" type="checkbox" checked style="width:auto;margin-top:4px"><span><b>Make each page's post different</b><small>The first page you tick posts exactly what you uploaded. Every other page gets its own caption wording, its own on-screen text and its own framing (crop, start, color, strip position). @mentions and #hashtags are kept.</small></span></label>
   <label for="tags">Tag these Instagram accounts <small>usernames separated by commas (shows as tagged in the video)</small></label><input id="tags" type="text" placeholder="e.g. adinross, someone" autocapitalize="none" autocomplete="off">
   <label for="collab">Invite as collab <small>up to 3 usernames, comma separated (they get an invite to co-author the post)</small></label><input id="collab" type="text" autocapitalize="none" autocomplete="off">
   <label for="cap">Caption</label><textarea id="cap"></textarea>
@@ -3062,7 +3063,7 @@ $("go").onclick=()=>{
     say("Uploaded. Queuing...");
     const split=s=>s.split(",").map(v=>v.trim()).filter(Boolean);
     const j=await fetch("/new-post/job",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
-      key:KEY,url:r.url,platform:$("plat").value,channel:$("chan").value.trim(),page_ids:pages,gap_hours:+$("gap").value||0,tags:split($("tags").value),
+      key:KEY,url:r.url,platform:$("plat").value,channel:$("chan").value.trim(),page_ids:pages,gap_hours:+$("gap").value||0,unique:$("uniq").checked,tags:split($("tags").value),
       collaborators:split($("collab").value),caption:$("cap").value,overlay:$("ov").value.trim()})});
     const d=await j.json();$("go").disabled=false;
     if(!j.ok)return say(d.error||"Could not queue it.","bad");
@@ -3147,8 +3148,8 @@ def newpost_job():
         return jsonify({"error": str(e)}), 400
     sid = f"auto_sub_{int(time.time())}_{uuid.uuid4().hex[:6]}"
     spec = {"id": sid, "created": int(time.time()), "url": url, "platform": platform, "channel": channel,
-            "page_ids": page_ids, "gap_hours": gap, "tags": tags, "collaborators": collabs, "caption": caption,
-            "overlay": overlay}
+            "page_ids": page_ids, "gap_hours": gap, "unique": bool(d.get("unique", True)), "tags": tags,
+            "collaborators": collabs, "caption": caption, "overlay": overlay}
     try:
         _r2_client().put_object(Bucket=os.environ["R2_BUCKET"], Key=f"submissions/{sid}.json",
                                 Body=json.dumps(spec).encode("utf-8"), ContentType="application/json", CacheControl="no-store")

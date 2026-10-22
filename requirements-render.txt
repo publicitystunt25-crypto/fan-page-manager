@@ -3,3 +3,5 @@ imageio-ffmpeg
 Pillow
 boto3
 requests
+anthropic
+tzdata
