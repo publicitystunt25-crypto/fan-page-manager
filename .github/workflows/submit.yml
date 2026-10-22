@@ -3,6 +3,9 @@ name: Render submitted clips
 # Renders every clip submitted through the bot's /submit page (submissions/<id>.json in the bucket) that has no manifest
 # yet, then queues it for the bot. Started on a short timer by cron-job.org (GitHub's own schedule runs late) or by hand.
 on:
+  push:
+    paths:
+      - "submit_trigger.txt"   # pushing this file starts a run without any token
   workflow_dispatch:
 
 # the same group as the auto feed: both add entries to auto/queue.json, so they must not run at the same time
