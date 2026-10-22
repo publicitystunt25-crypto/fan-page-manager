@@ -206,10 +206,35 @@ def write_copy(clip, transcript, n):
     return [{"overlay": base, "caption": title} for _ in range(n)]
 
 
-def make_variants(clip, cfg, copy):
+def choose_page(cfg, page_log, now):
+    """(page id, 'ok') for the page that should get the next clip, or (None, why not).
+    page_log = {"<page id>": [iso timestamps of the feed's posts]}. Rolling 24h limit, minimum gap, posting hours (ET)."""
+    from zoneinfo import ZoneInfo
+    start, end = cfg.get("active_hours_et", [0, 24])
+    hour = now.astimezone(ZoneInfo("America/New_York")).hour
+    if not (start <= hour < end):
+        return None, f"outside the posting hours ({start}:00 to {end}:00 ET)"
+    cap, gap_h = cfg.get("max_per_page_per_day", 3), cfg.get("min_gap_hours", 5)
+    best = None
+    for pid in cfg["page_ids"]:
+        times = sorted(datetime.fromisoformat(t) for t in page_log.get(str(pid), []))
+        day = [t for t in times if (now - t).total_seconds() < 24 * 3600]
+        if len(day) >= cap:
+            continue
+        if day and (now - day[-1]).total_seconds() < gap_h * 3600:
+            continue
+        key = (len(day), day[-1] if day else datetime.min.replace(tzinfo=timezone.utc))   # fewest posts, then longest wait
+        if best is None or key < best[0]:
+            best = (key, pid)
+    if best is None:
+        return None, f"every page is at its limit of {cap} a day or posted less than {gap_h}h ago"
+    return best[1], "ok"
+
+
+def make_variants(clip, pages, copy):
     rnd = random.Random(clip["id"])
     variants = []
-    for pid, c in zip(cfg["page_ids"], copy):
+    for pid, c in zip(pages, copy):
         variants.append({
             "page_ids": [int(pid)], "text": c["overlay"], "caption": c["caption"],
             "crop": round(rnd.uniform(0.9, 1.0), 2), "crop_x": round(rnd.uniform(0.3, 0.7), 2),
@@ -244,6 +269,12 @@ def main():
             return 0
     store = rw.Store()
     seen = set(store.get_json("auto/seen.json", []) or [])
+    page_log = store.get_json("auto/page_log.json", {}) or {}
+    target, why_page = choose_page(cfg, page_log, datetime.now(timezone.utc))
+    if target is None:
+        print(f"[auto] nothing to post this hour: {why_page}")
+        return 0
+    print(f"[auto] next page: {target}", flush=True)
     candidates = pick_clips(cfg, seen, datetime.now(timezone.utc).hour)
     if not candidates:
         print("[auto] no suitable new clip this hour")
@@ -314,8 +345,8 @@ def main():
     jid = f"auto_{clip['id']}"
     try:
         store.put_json(f"transcripts/{jid}.json", {**tr, "job": jid, "url": url, "title": clip["title"]})
-        copy = write_copy(clip, tr["text"], len(cfg["page_ids"]))
-        job = {"id": jid, "url": url, "render": "remote", "footer": "", "variants": make_variants(clip, cfg, copy)}
+        copy = write_copy(clip, tr["text"], 1)
+        job = {"id": jid, "url": url, "render": "remote", "footer": "", "variants": make_variants(clip, [target], copy)}
         rw.process_job(job, store, public_base, int(os.environ.get("RENDER_WORKERS", "3")))
     except CopyFailed as e:
         seen.discard(clip["id"])               # not the clip's fault: let the next hour try it again
@@ -331,6 +362,11 @@ def main():
     queue.append({"id": jid, "created": int(time.time()), "stagger_minutes": cfg.get("stagger_minutes", [3, 6]),
                   "title": clip["title"], "channel": clip["_slug"]})
     store.put_json("auto/queue.json", queue[-60:])
+    now_iso = datetime.now(timezone.utc).isoformat()
+    page_log.setdefault(str(target), []).append(now_iso)
+    cutoff = time.time() - 3 * 24 * 3600
+    page_log = {k: [t for t in v if datetime.fromisoformat(t).timestamp() > cutoff] for k, v in page_log.items()}
+    store.put_json("auto/page_log.json", page_log)
     note_run(store, clip, "queued", "copy by " + ("claude" if os.environ.get("ANTHROPIC_API_KEY") else "title (no key)"))
     print(f"[auto] queued {jid} for the bot", flush=True)
     return 0

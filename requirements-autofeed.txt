@@ -7,3 +7,4 @@ anthropic
 curl_cffi
 av==16.1.0
 faster-whisper
+tzdata

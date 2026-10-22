@@ -238,6 +238,35 @@ def _log_post(page_id, post_id, caption, media_url, err, permalink=None):
 
 PUBLISH_GAP = (30, 60)   # seconds between publishes: close together, but never in the same minute
 
+MAX_POSTS_PER_PAGE_PER_DAY = int(os.environ.get("MAX_POSTS_PER_PAGE_PER_DAY", "3"))   # rolling 24 hours, every source
+
+
+def _posts_last_24h(page_ids):
+    """{fan_page_id: posts made in the last 24 hours} from the post log."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""SELECT fan_page_id, COUNT(*) FROM post_log
+                   WHERE fan_page_id = ANY(%s) AND ig_post_id IS NOT NULL AND posted_at >= NOW() - INTERVAL '24 hours'
+                   GROUP BY fan_page_id""", (list(page_ids),))
+    out = {r[0]: r[1] for r in cur.fetchall()}
+    cur.close()
+    conn.close()
+    return out
+
+
+def _apply_daily_cap(tasks, used, cap):
+    """tasks: [(page row, item)], used: {page id: posts in the last 24h}. Returns (kept tasks, refused results)."""
+    used = dict(used)
+    kept, refused = [], []
+    for page, it in tasks:
+        if used.get(page["id"], 0) >= cap:
+            refused.append((page["page_name"], None, f"daily limit of {cap} posts reached, not posted"))
+            continue
+        used[page["id"]] = used.get(page["id"], 0) + 1
+        kept.append((page, it))
+    return kept, refused
+
+
 def _post_pipelined(items, gap=PUBLISH_GAP):
     """items: [{"page_ids": [..], "caption", "url"}]. All videos are handed to Instagram at once so they
     process in parallel, then published one at a time with a random gap. Returns [(page_name, post_id, error)]."""
@@ -256,6 +285,11 @@ def _post_pipelined(items, gap=PUBLISH_GAP):
         for pid in it["page_ids"]:
             if int(pid) in pages:
                 tasks.append((pages[int(pid)], it))
+    try:
+        tasks, refused = _apply_daily_cap(tasks, _posts_last_24h(list(pages)), MAX_POSTS_PER_PAGE_PER_DAY)
+    except Exception as e:      # if the limit cannot be checked, nothing is posted
+        print(f"[post] could not check the daily limit ({type(e).__name__}); nothing posted")
+        return [(p["page_name"], None, "could not check the daily post limit, nothing posted") for p in pages.values()]
 
     def prepare(task):
         page, it = task
@@ -284,7 +318,9 @@ def _post_pipelined(items, gap=PUBLISH_GAP):
         shown = f"{post_id} ({note})" if (post_id and note) else post_id
         results.append((page["page_name"], shown, err))
         print(f"[post] {page['page_name']}: {'posted ' + str(shown) if not err else 'error ' + str(err)}")
-    return results
+    for r in refused:
+        print(f"[post] {r[0]}: {r[2]}")
+    return results + refused
 
 def upload_to_imgbb(image_path):
     """Upload image to imgbb and return public URL."""

@@ -6,14 +6,9 @@
     "blueface"
   ],
   "page_ids": [
-    1,
     4,
-    10,
     14,
-    19,
-    25,
-    26,
-    28
+    19
   ],
   "stagger_minutes": [
     1,
@@ -64,6 +59,10 @@
       ]
     }
   },
-  "pause_until": "2026-10-16T07:45:00Z",
-  "pause_from": "2026-10-16T07:00:00Z"
+  "max_per_page_per_day": 3,
+  "min_gap_hours": 5,
+  "active_hours_et": [
+    9,
+    23
+  ]
 }
