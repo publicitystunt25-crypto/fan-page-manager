@@ -174,13 +174,41 @@ def ig_create_container_tagged(ig_account_id, token, media_url, caption, media_t
         attempts.append(("collab invite only", {"collaborators": json.dumps(collabs)}))
     if tags:
         attempts.append(("tag only", {"user_tags": tag_json}))
+    def tj(users):
+        return json.dumps([{"username": u} if media_type == "VIDEO" else {"username": u, "x": 0.5, "y": 0.5} for u in users])
+
+    def keep_valid_tags():
+        """One username Instagram does not know rejects the whole list. Find the ones it accepts and use only those
+        (with the collab invite if there is one). Returns (creation id, note) or None."""
+        good, bad = [], []
+        for u in tags:
+            one = requests.post(f"{g}/{ig_account_id}/media", data={**base, "user_tags": tj([u])}, timeout=30).json()
+            (good if one.get("id") else bad).append(u)
+        if not good:
+            errors.append(f"usernames not accepted: {', '.join(bad)}")
+            return None
+        tries = ([("tag + collab invite", {"user_tags": tj(good), "collaborators": json.dumps(collabs)})] if collabs else [])
+        tries.append(("tag only", {"user_tags": tj(good)}))
+        for label, extra in tries:
+            result = requests.post(f"{g}/{ig_account_id}/media", data={**base, **extra}, timeout=30).json()
+            if result.get("id"):
+                dropped = f"; not accepted by Instagram: {', '.join(bad)}" if bad else ""
+                return result["id"], f"attached: {label} ({', '.join(good)}{dropped})"
+        return None
+
     errors = []
+    probed = False
     for label, extra in attempts:
         result = requests.post(f"{g}/{ig_account_id}/media", data={**base, **extra}, timeout=30).json()
         if result.get("id"):
             note = f"attached: {label}" + (f" (dropped: {'; '.join(errors)[:120]})" if errors else "")
             return result["id"], None, note
         errors.append(f"{label}: {result.get('error', {}).get('message', str(result))[:70]}")
+        if "user_tags" in extra and len(tags) > 1 and not probed:
+            probed = True
+            got = keep_valid_tags()
+            if got:
+                return got[0], None, got[1]
     cid, err = ig_create_container(ig_account_id, token, media_url, caption, media_type, graph)
     return cid, err, (f"posted WITHOUT tag/collab: {'; '.join(errors)[:160]}" if cid else "")
 
@@ -2524,6 +2552,9 @@ def _sched_summary(rows, now):
     ok = [r for r in rows if r["status"] == "posted"]
     pending = sorted((r for r in rows if r["status"] == "pending"), key=lambda r: r["post_at"])
     text = f"Posted {len(ok)} of {len(rows)}."
+    tagnotes = [r.get("note", "") for r in ok if "WITHOUT" in r.get("note", "") or "not accepted" in r.get("note", "")]
+    if tagnotes:
+        text += f" Tag problem on {len(tagnotes)} page(s): {tagnotes[0][:160]}."
     bad = [r["status"] for r in done if r["status"] != "posted"]
     if bad:
         text += f" Not posted: {len(bad)} (" + "; ".join(sorted(set(bad)))[:200] + ")."
@@ -2552,7 +2583,9 @@ def _scheduler_tick(now=None):
             except Exception as e:
                 post_id, err = None, f"{type(e).__name__}"
             row["status"] = "posted" if post_id else f"error: {str(err)[:100]}"
-            row["post_id"], row["at"], changed = post_id, int(time.time()), True
+            m = re.match(r"^(\S+) \((.*)\)$", str(post_id or ""), re.S)      # "id (note about tags / collabs)"
+            row["post_id"], row["note"] = (m.group(1), m.group(2)) if m else (post_id, "")
+            row["at"], changed = int(time.time()), True
             print(f"[sched] {sched['id']} page {row['page_id']}: {row['status']}")
             break                      # one post per schedule per pass; the next row is hours away anyway
         text, finished = _sched_summary(sched["rows"], now)
