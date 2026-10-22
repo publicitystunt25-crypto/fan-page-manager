@@ -591,11 +591,18 @@ def list_available_pages():
                          params={"fields": "id,name,instagram_business_account",
                                  "access_token": get_user_token(), "limit": 100},
                          timeout=15)
-        pages = r.json().get("data", [])
+        body = r.json()
+        pages = body.get("data", [])
         result = [{"fb_page_id": p["id"], "name": p.get("name"),
                    "ig_account_id": p.get("instagram_business_account", {}).get("id")}
                   for p in pages]
-        return jsonify({"available": result, "total": len(result)})
+        out = {"available": result, "total": len(result)}
+        if not pages:          # say why: Facebook's own error (never the token), and whether a token was found at all
+            err = body.get("error") or {}
+            out["token_found"] = bool(get_user_token())
+            out["facebook_error"] = {"message": str(err.get("message", ""))[:300], "code": err.get("code"),
+                                     "subcode": err.get("error_subcode"), "type": err.get("type")} if err else None
+        return jsonify(out)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
