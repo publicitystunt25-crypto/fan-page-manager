@@ -23,5 +23,16 @@
         "@therealhotboyturk": "@originalhotboyturk"
       }
     }
+  },
+  {
+    "id": "fix_collabs_20261022",
+    "fix_schedule": {
+      "id": "auto_sub_1792692424_40bb07",
+      "collaborators": [
+        "kmajormusic",
+        "khaotic305",
+        "therealmiasnow"
+      ]
+    }
   }
 ]

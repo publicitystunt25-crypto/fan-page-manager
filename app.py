@@ -2601,8 +2601,11 @@ def _scheduler_tick(now=None):
 
 def _fix_schedule_worker(job):
     """One-off edit of the posts that are still WAITING in a spaced schedule (posted ones are never touched).
-    job["fix_schedule"] = {"id": "<job id>", "tags": {"wrong": "right"}, "text": {"wrong": "right"}}
-    tags are replaced by username (any case); text replacements apply to each waiting post's caption."""
+    job["fix_schedule"] = {"id": "<job id>", "tags": {"wrong": "right"}, "text": {"wrong": "right"},
+                           "collaborators": ["user", ...]}
+    tags are replaced by username (any case); text replacements apply to each waiting post's caption; collaborators
+    (up to 3) become the collab invites of each waiting post and are removed from its tag list, so an account is
+    never both tagged and invited."""
     spec = job["fix_schedule"]
     sid = spec["id"]
     try:
@@ -2626,6 +2629,11 @@ def _fix_schedule_worker(job):
                 t = tagmap.get(t.lower(), t)
                 if t not in new_tags:
                     new_tags.append(t)
+            collabs = [str(c).lstrip("@") for c in (spec.get("collaborators") or [])][:3]
+            if collabs:
+                low = {c.lower() for c in collabs}
+                new_tags = [t for t in new_tags if t.lower() not in low]
+                it["collaborators"] = collabs
             it["tags"] = new_tags
             for old, new in (spec.get("text") or {}).items():
                 it["caption"] = it["caption"].replace(old, new)
