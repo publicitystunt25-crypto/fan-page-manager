@@ -28,8 +28,7 @@ PAGE_GROUPS = {"promo", "clipper"}
 # ── DB ────────────────────────────────────────────────────────────────────────
 
 def get_conn():
-    return psycopg2.connect(DATABASE_URL, connect_timeout=10,
-                            options="-c statement_timeout=8000")
+    return psycopg2.connect(DATABASE_URL, connect_timeout=10)
 
 def init_db():
     conn = get_conn()
