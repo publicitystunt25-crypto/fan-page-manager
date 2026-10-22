@@ -2706,6 +2706,100 @@ def dashboard_refresh():
     threading.Thread(target=_pull_analytics_once, daemon=True).start()
     return jsonify({"started": True})
 
+# ── UPLOAD PAGE: pick a video on a phone or computer, get a link that works as a clip ─────────────────────────────
+# Needs (Render environment): UPLOAD_KEY (a passcode you choose) and the R2 keys R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
+# R2_SECRET_ACCESS_KEY, R2_BUCKET. The file goes into the bucket under uploads/ and the page shows its public link.
+# The render worker removes an uploaded original from the bucket once every version has been rendered.
+UPLOAD_MAX_MB = 250
+UPLOAD_EXTS = (".mp4", ".mov", ".m4v", ".webm")
+app.config["MAX_CONTENT_LENGTH"] = (UPLOAD_MAX_MB + 5) * 1024 * 1024
+
+
+def _upload_missing():
+    names = ("UPLOAD_KEY", "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET")
+    missing = [n for n in names if not os.environ.get(n)]
+    if not _render_public_base():
+        missing.append("public base (render_config.json)")
+    return missing
+
+
+UPLOAD_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upload a clip</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--mut:#666;--line:#d9d9d9;--acc:#2358d6;--ok:#157347;--bad:#b42318}
+@media (prefers-color-scheme:dark){:root{--bg:#121212;--fg:#ececec;--mut:#9a9a9a;--line:#333;--acc:#6f9bff;--ok:#5fd08d;--bad:#ff8a80}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,sans-serif}
+main{max-width:520px;margin:0 auto;padding:24px 16px}h1{font-size:22px;margin:0 0 4px}p{color:var(--mut);margin:0 0 20px}
+label{display:block;font-weight:600;margin:16px 0 6px}
+input[type=password],input[type=file]{width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--fg);font:inherit}
+button{width:100%;margin-top:20px;padding:14px;border:0;border-radius:10px;background:var(--acc);color:#fff;font:600 16px system-ui;cursor:pointer}
+button:disabled{opacity:.5}.bar{height:8px;border-radius:4px;background:var(--line);margin-top:16px;overflow:hidden;display:none}
+.bar i{display:block;height:100%;width:0;background:var(--acc)}#msg{margin-top:16px;word-break:break-all}.ok{color:var(--ok)}.bad{color:var(--bad)}
+.link{margin-top:8px;padding:12px;border:1px solid var(--line);border-radius:10px;font-family:ui-monospace,monospace;font-size:14px}
+</style></head><body><main>
+<h1>Upload a clip</h1><p>Pick a video (mp4, mov, m4v or webm, up to __MAX__ MB). You get a link back to send as the clip.</p>
+<label for="k">Passcode</label><input id="k" type="password" autocomplete="off">
+<label for="f">Video</label><input id="f" type="file" accept="video/*,.mp4,.mov,.m4v,.webm">
+<button id="go">Upload</button><div class="bar" id="bar"><i id="fill"></i></div><div id="msg" role="status"></div>
+</main><script>
+const $=id=>document.getElementById(id);
+$("go").onclick=()=>{
+  const file=$("f").files[0], key=$("k").value;
+  if(!key||!file){$("msg").className="bad";$("msg").textContent="Enter the passcode and choose a video.";return}
+  const fd=new FormData();fd.append("key",key);fd.append("file",file);
+  const x=new XMLHttpRequest();x.open("POST","/upload/file");
+  $("go").disabled=true;$("bar").style.display="block";$("msg").className="";$("msg").textContent="Uploading...";
+  x.upload.onprogress=e=>{if(e.lengthComputable)$("fill").style.width=(100*e.loaded/e.total)+"%"};
+  x.onload=()=>{let r={};try{r=JSON.parse(x.responseText)}catch(e){}
+    $("go").disabled=false;
+    if(x.status===200&&r.url){$("msg").className="ok";$("msg").innerHTML="Uploaded. Your link:<div class='link' id='lk'></div><button id='cp'>Copy link</button>";
+      $("lk").textContent=r.url;$("cp").onclick=()=>{navigator.clipboard&&navigator.clipboard.writeText(r.url);$("cp").textContent="Copied"}}
+    else{$("msg").className="bad";$("msg").textContent=r.error||("Upload failed ("+x.status+")")}};
+  x.onerror=()=>{$("go").disabled=false;$("msg").className="bad";$("msg").textContent="Network error, try again."};
+  x.send(fd);
+};
+</script></body></html>"""
+
+
+@app.route("/upload", methods=["GET"])
+def upload_page():
+    missing = _upload_missing()
+    if missing:
+        return Response("Upload is not set up yet. Missing on the server: " + ", ".join(missing), status=503, mimetype="text/plain")
+    return Response(UPLOAD_PAGE.replace("__MAX__", str(UPLOAD_MAX_MB)), mimetype="text/html")
+
+
+@app.route("/upload/file", methods=["POST"])
+def upload_file():
+    import hmac
+    if _upload_missing():
+        return jsonify({"error": "upload is not set up on the server yet"}), 503
+    if not hmac.compare_digest(request.form.get("key", ""), os.environ["UPLOAD_KEY"]):
+        return jsonify({"error": "wrong passcode"}), 401
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "no file received"}), 400
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(f.filename))[-60:]
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in UPLOAD_EXTS:
+        return jsonify({"error": "that file type is not supported (use mp4, mov, m4v or webm)"}), 400
+    try:
+        import boto3
+        s3 = boto3.client("s3", region_name="auto",
+                          endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+                          aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+                          aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"])
+        key = f"uploads/{int(time.time())}-{uuid.uuid4().hex[:6]}-{name}"
+        s3.upload_fileobj(f.stream, os.environ["R2_BUCKET"], key,
+                          ExtraArgs={"ContentType": "video/mp4" if ext in (".mp4", ".m4v") else f.mimetype or "video/quicktime"})
+    except Exception as e:
+        print(f"[upload] failed: {type(e).__name__}: {str(e)[:200]}")
+        return jsonify({"error": "the upload to storage failed, check the server's storage keys"}), 502
+    print(f"[upload] stored {key}")
+    return jsonify({"url": f"{_render_public_base()}/{key}"})
+
+
 # ── PAGE DISPLAY NAMES (page_names.json: {"<fan_pages id>": "Name"}; applied at startup, survives reconnects) ──
 
 PAGE_NAMES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_names.json")

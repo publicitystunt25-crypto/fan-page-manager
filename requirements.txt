@@ -7,3 +7,4 @@ Pillow
 yt-dlp
 imageio-ffmpeg
 anthropic
+boto3
