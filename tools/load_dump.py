@@ -7,6 +7,7 @@ Run it on your own computer so the connection string and the data never leave it
         python tools/load_dump.py "C:\\Users\\Nathaniel\\Downloads\\db_neon.sql"          # shows what it found, changes nothing
         python tools/load_dump.py "C:\\Users\\Nathaniel\\Downloads\\db_neon.sql" --go     # loads it
 
+A .gz dump can be given as it is (it is read while decompressing, nothing is unpacked to disk).
 Only the bot's own tables are loaded; everything else in the file is ignored. Nothing is deleted, truncated or
 overwritten: rows that already exist are skipped. The tables must already exist (start the bot once against the new
 database and it creates them). `--parse-only` reads the file without connecting to any database.
@@ -25,7 +26,12 @@ def sections(path):
     """Yield (table, [columns], [data lines]) for each wanted COPY section of the dump."""
     table = cols = None
     lines = []
-    with open(path, encoding="utf-8", errors="replace") as f:
+    if path.lower().endswith(".gz"):          # read a compressed dump directly: no 2 GB of unpacked file on disk
+        import gzip
+        f = gzip.open(path, "rt", encoding="utf-8", errors="replace")
+    else:
+        f = open(path, encoding="utf-8", errors="replace")
+    with f:
         for line in f:
             if table is None:
                 m = HEADER.match(line)
