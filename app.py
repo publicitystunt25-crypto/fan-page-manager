@@ -2472,8 +2472,11 @@ def _auto_feed_loop():
                         print(f"[auto-feed] {jid}: skipped, queued over {AUTO_FEED_STALE_HOURS}h ago")
                         continue
                     try:
-                        summary = _run_remote_job({"id": jid, "stagger_minutes": entry.get("stagger_minutes", [3, 6])},
-                                                  wait_hours=1)
+                        if float(entry.get("gap_hours") or 0) > 0:     # spaced posting: hand it to the scheduler
+                            summary = _schedule_entry(jid, float(entry["gap_hours"]))
+                        else:
+                            summary = _run_remote_job({"id": jid, "stagger_minutes": entry.get("stagger_minutes", [3, 6])},
+                                                      wait_hours=1)
                     except Exception as e:
                         summary = f"failed: {type(e).__name__}: {str(e)[:200]}"
                     print(f"[auto-feed] {jid}: {summary}")
@@ -2484,6 +2487,105 @@ def _auto_feed_loop():
         except Exception as e:
             print(f"[auto-feed] {type(e).__name__}")
         time.sleep(120)
+
+
+# ── SPACED POSTING: one video, one page at a time, hours apart ─────────────────────────────────────────────────────
+# A job with gap_hours does not sleep inside a thread. Its posts are written to the database as a schedule
+# (app_settings key sched_<job id>) and a loop checks it every minute, so it survives restarts and sleeping. Each
+# post is claimed exactly once (schedclaim_<job id>_<n>) before it is made, so it can never be posted twice.
+SCHED_MAX_LATE = 6 * 3600       # a post more than 6 hours past its time is skipped (the bot was off for too long)
+
+
+def _schedule_build(items, start_ts, gap_hours):
+    """items: manifest items in the order they should post. Returns the schedule rows."""
+    rows = []
+    for n, it in enumerate(items):
+        for pid in it["page_ids"]:
+            rows.append({"page_id": int(pid), "post_at": int(start_ts + len(rows) * float(gap_hours) * 3600),
+                         "status": "pending",
+                         "item": {"page_ids": [int(pid)], "caption": it["caption"], "url": it["url"],
+                                  "tags": it.get("tags", []), "collaborators": it.get("collaborators", [])}})
+    return rows
+
+
+def _sched_load_all():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT key, value FROM app_settings WHERE key LIKE 'sched\\_%'")
+    out = [(k, json.loads(v)) for k, v in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return out
+
+
+def _sched_summary(rows, now):
+    """('Posted 3 of 9. Next in 42 min.', finished?)"""
+    done = [r for r in rows if r["status"] != "pending"]
+    ok = [r for r in rows if r["status"] == "posted"]
+    pending = sorted((r for r in rows if r["status"] == "pending"), key=lambda r: r["post_at"])
+    text = f"Posted {len(ok)} of {len(rows)}."
+    bad = [r["status"] for r in done if r["status"] != "posted"]
+    if bad:
+        text += f" Not posted: {len(bad)} (" + "; ".join(sorted(set(bad)))[:200] + ")."
+    if pending:
+        mins = max(0, int((pending[0]["post_at"] - now) / 60))
+        text += f" Next in {mins} min." if mins else " Next one is due now."
+    return text, not pending
+
+
+def _scheduler_tick(now=None):
+    now = now if now is not None else time.time()
+    for key, sched in _sched_load_all():
+        changed = False
+        for n, row in enumerate(sched["rows"]):
+            if row["status"] != "pending" or row["post_at"] > now:
+                continue
+            if now - row["post_at"] > SCHED_MAX_LATE:
+                row["status"], changed = "missed: the bot was off or asleep too long", True
+                continue
+            if not _claim_setting(f"schedclaim_{sched['id']}_{n}"):
+                row["status"], changed = "unknown: may already have posted, check the page", True
+                continue
+            try:
+                res = _post_pipelined([row["item"]])
+                _, post_id, err = res[0] if res else (None, None, "the page is switched off in the bot")
+            except Exception as e:
+                post_id, err = None, f"{type(e).__name__}"
+            row["status"] = "posted" if post_id else f"error: {str(err)[:100]}"
+            row["post_id"], row["at"], changed = post_id, int(time.time()), True
+            print(f"[sched] {sched['id']} page {row['page_id']}: {row['status']}")
+            break                      # one post per schedule per pass; the next row is hours away anyway
+        text, finished = _sched_summary(sched["rows"], now)
+        if finished and not sched.get("reported"):
+            sched["reported"], changed = True, True
+            try:
+                _set_setting(f"job_{sched['id']}_result", text)
+            except Exception as e:
+                print(f"[sched] could not store result: {type(e).__name__}")
+        if changed:
+            _set_setting(key, json.dumps(sched))
+
+
+def _scheduler_loop():
+    time.sleep(40)
+    while True:
+        try:
+            _scheduler_tick()
+        except Exception as e:
+            print(f"[sched] {type(e).__name__}: {str(e)[:120]}")
+        time.sleep(60)
+
+
+def _schedule_entry(jid, gap_hours):
+    """Turn a rendered job (its manifest) into a spaced schedule. Returns a short summary."""
+    base = _render_public_base()
+    r = requests.get(f"{base}/manifests/{jid}.json", timeout=20, headers={"Cache-Control": "no-cache"})
+    if r.status_code != 200:
+        return "failed: the rendered videos were not found"
+    items = r.json().get("items", [])
+    rows = _schedule_build(items, time.time(), gap_hours)
+    _set_setting(f"sched_{jid}", json.dumps({"id": jid, "gap_hours": gap_hours, "rows": rows}))
+    return f"scheduled {len(rows)} posts, {gap_hours} h apart"
 
 
 def _run_jobs_once():
@@ -2864,6 +2966,11 @@ def _upload_key_ok(given):
     return bool(os.environ.get("UPLOAD_KEY")) and hmac.compare_digest(str(given or ""), os.environ["UPLOAD_KEY"])
 
 
+def _newpost_hidden():
+    """Page ids kept off the form (default: 2, the Clip Fire 1 account that Instagram disabled). Env NEWPOST_HIDE_PAGES."""
+    return [int(x) for x in re.findall(r"\d+", os.environ.get("NEWPOST_HIDE_PAGES", "2"))] or [0]
+
+
 def _handles(raw, limit):
     out = []
     for h in (raw or []):
@@ -2903,7 +3010,9 @@ button:disabled{opacity:.5}.row{display:flex;gap:8px}.row>*{flex:1}.pages label{
   <div class="row"><select id="plat"><option value="kick">Kick</option><option value="twitch">Twitch</option><option value="none">No strip</option></select>
   <input id="chan" type="text" placeholder="channel name, e.g. adinross" autocapitalize="none" autocomplete="off"></div>
   <div class="pv" id="pv"></div>
-  <label>Pages to post on <small>one or two is safest; each page is limited to __CAP__ posts a day</small></label><div class="pages" id="pages"></div>
+  <label>Pages to post on <small>posted in the order you tick them; each page is limited to __CAP__ posts a day. A page that is off is switched on when you submit.</small></label><div class="pages" id="pages"></div>
+  <label for="gap">Hours between pages <small>1 = one page every hour, the first as soon as it is rendered. 0 = all within a few minutes. 0.25 to 24.</small></label>
+  <input id="gap" type="number" min="0" max="24" step="0.25" value="1"><div class="pv" id="plan"></div>
   <label for="tags">Tag these Instagram accounts <small>usernames separated by commas (shows as tagged in the video)</small></label><input id="tags" type="text" placeholder="e.g. adinross, someone" autocapitalize="none" autocomplete="off">
   <label for="collab">Invite as collab <small>up to 3 usernames, comma separated (they get an invite to co-author the post)</small></label><input id="collab" type="text" autocapitalize="none" autocomplete="off">
   <label for="cap">Caption</label><textarea id="cap"></textarea>
@@ -2912,7 +3021,10 @@ button:disabled{opacity:.5}.row{display:flex;gap:8px}.row>*{flex:1}.pages label{
 </div>
 <div id="msg" role="status"></div>
 </main><script>
-const $=id=>document.getElementById(id);let KEY="";
+const $=id=>document.getElementById(id);let KEY="";const order=[];const NAMES={};
+const plan=()=>{const g=+$("gap").value||0,n=order.length;
+  $("plan").textContent=!n?"":(n===1?"1 page.":(g>0?n+" pages, one every "+g+" h: about "+((n-1)*g)+" h from the first post to the last.":n+" pages, a minute or two apart."))};
+$("gap").oninput=plan;
 const say=(t,c)=>{$("msg").className=c||"";$("msg").textContent=t};
 const preview=()=>{const p=$("plat").value,n=$("chan").value.trim().replace(/^@/,"");
   $("chan").style.display=p==="none"?"none":"";
@@ -2924,17 +3036,19 @@ $("unlock").onclick=async()=>{KEY=$("k").value;say("Checking...");
   if(!r.ok){say("The server is not ready ("+r.status+").","bad");return}
   const d=await r.json();$("lock").style.display="none";$("form").style.display="block";say("");
   $("pages").innerHTML="";
-  if(!d.pages.length){$("pages").textContent="No pages are switched on in the bot right now."}
+  if(!d.pages.length){$("pages").textContent="No pages found in the bot."}
   d.pages.forEach(p=>{const l=document.createElement("label"),c=document.createElement("input");
-    c.type="checkbox";c.value=p.id;l.appendChild(c);
-    const t=document.createElement("span");t.textContent=p.name+"  ("+p.used+"/"+d.cap+" today)";l.appendChild(t);
-    if(p.used>=d.cap){c.disabled=true}$("pages").appendChild(l)})};
+    c.type="checkbox";c.value=p.id;l.appendChild(c);NAMES[p.id]=p.name+"  ("+p.used+"/"+d.cap+" today"+(p.on?"":", off")+")";
+    const t=document.createElement("span");t.dataset.id=p.id;t.textContent=NAMES[p.id];l.appendChild(t);
+    c.onchange=()=>{const i=order.indexOf(p.id);if(c.checked&&i<0)order.push(p.id);if(!c.checked&&i>=0)order.splice(i,1);
+      document.querySelectorAll("#pages [data-id]").forEach(s=>{const k=order.indexOf(+s.dataset.id);s.textContent=(k>=0?"#"+(k+1)+"  ":"")+NAMES[s.dataset.id]});plan()};
+    if(p.used>=d.cap){c.disabled=true}$("pages").appendChild(l)});plan()};
 const poll=id=>{const t=setInterval(async()=>{
   const r=await fetch("/new-post/status?id="+encodeURIComponent(id),{headers:{"X-Upload-Key":KEY}});
   if(!r.ok)return;const d=await r.json();say(d.message,d.state==="failed"?"bad":(d.state==="done"?"ok":""));
   if(d.state==="done"||d.state==="failed")clearInterval(t)},10000)};
 $("go").onclick=()=>{
-  const file=$("f").files[0],pages=[...document.querySelectorAll("#pages input:checked")].map(c=>+c.value);
+  const file=$("f").files[0],pages=order.slice();
   if(!file)return say("Choose a video first.","bad");
   if(!pages.length)return say("Pick at least one page.","bad");
   if(!$("cap").value.trim())return say("Write a caption.","bad");
@@ -2948,7 +3062,7 @@ $("go").onclick=()=>{
     say("Uploaded. Queuing...");
     const split=s=>s.split(",").map(v=>v.trim()).filter(Boolean);
     const j=await fetch("/new-post/job",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
-      key:KEY,url:r.url,platform:$("plat").value,channel:$("chan").value.trim(),page_ids:pages,tags:split($("tags").value),
+      key:KEY,url:r.url,platform:$("plat").value,channel:$("chan").value.trim(),page_ids:pages,gap_hours:+$("gap").value||0,tags:split($("tags").value),
       collaborators:split($("collab").value),caption:$("cap").value,overlay:$("ov").value.trim()})});
     const d=await j.json();$("go").disabled=false;
     if(!j.ok)return say(d.error||"Could not queue it.","bad");
@@ -2974,8 +3088,8 @@ def newpost_pages():
         return jsonify({"error": "wrong passcode"}), 401
     conn = get_conn()
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT id, page_name FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL AND page_group='clipper' "
-                "ORDER BY page_name")
+    cur.execute("SELECT id, page_name, active FROM fan_pages WHERE ig_account_id IS NOT NULL AND page_group='clipper' "
+                "AND id <> ALL(%s) ORDER BY page_name", (_newpost_hidden(),))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -2984,7 +3098,8 @@ def newpost_pages():
     except Exception:
         used = {}
     return jsonify({"cap": MAX_POSTS_PER_PAGE_PER_DAY,
-                    "pages": [{"id": r["id"], "name": r["page_name"], "used": used.get(r["id"], 0)} for r in rows]})
+                    "pages": [{"id": r["id"], "name": r["page_name"], "used": used.get(r["id"], 0), "on": bool(r["active"])}
+                              for r in rows]})
 
 
 @app.route("/new-post/job", methods=["POST"])
@@ -3010,31 +3125,50 @@ def newpost_job():
             raise ValueError("the caption must be between 1 and 2200 characters")
         overlay = str(d.get("overlay", "")).strip()[:80]
         tags, collabs = _handles(d.get("tags"), 20), _handles(d.get("collaborators"), 3)
-        page_ids = sorted({int(p) for p in (d.get("page_ids") or [])})
+        page_ids = []
+        for p in (d.get("page_ids") or []):          # the order they were ticked is the order they post in
+            if int(p) not in page_ids:
+                page_ids.append(int(p))
         if not page_ids:
             raise ValueError("pick at least one page")
+        gap = float(d.get("gap_hours") or 0)
+        if gap < 0 or gap > 24 or (0 < gap < 0.25):
+            raise ValueError("hours between pages must be 0, or between 0.25 and 24")
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT id FROM fan_pages WHERE active=TRUE AND page_group='clipper' AND id = ANY(%s)", (page_ids,))
+        cur.execute("SELECT id FROM fan_pages WHERE ig_account_id IS NOT NULL AND page_group='clipper' AND id = ANY(%s) "
+                    "AND id <> ALL(%s)", (page_ids, _newpost_hidden()))
         ok_ids = {r[0] for r in cur.fetchall()}
         cur.close()
         conn.close()
         if set(page_ids) - ok_ids:
-            raise ValueError("one of those pages is not switched on")
+            raise ValueError("one of those pages is not available")
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     sid = f"auto_sub_{int(time.time())}_{uuid.uuid4().hex[:6]}"
     spec = {"id": sid, "created": int(time.time()), "url": url, "platform": platform, "channel": channel,
-            "page_ids": page_ids, "tags": tags, "collaborators": collabs, "caption": caption, "overlay": overlay}
+            "page_ids": page_ids, "gap_hours": gap, "tags": tags, "collaborators": collabs, "caption": caption,
+            "overlay": overlay}
     try:
         _r2_client().put_object(Bucket=os.environ["R2_BUCKET"], Key=f"submissions/{sid}.json",
                                 Body=json.dumps(spec).encode("utf-8"), ContentType="application/json", CacheControl="no-store")
     except Exception as e:
         print(f"[submit] could not store the job: {type(e).__name__}: {str(e)[:160]}")
         return jsonify({"error": "could not save the job to storage"}), 502
-    print(f"[submit] queued {sid} for pages {page_ids}")
-    return jsonify({"id": sid, "message": "Queued. It renders in a few minutes, then posts to the pages you picked, "
-                                          "spaced a minute or two apart. This page keeps you updated."})
+    try:                                   # a page that was off is switched on now that you chose it
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE fan_pages SET active=TRUE WHERE id = ANY(%s)", (page_ids,))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[submit] could not switch the pages on: {type(e).__name__}")
+    print(f"[submit] queued {sid} for pages {page_ids}, gap {gap} h")
+    how = (f"one page every {gap:g} hours, starting as soon as it is rendered" if gap > 0
+           else "all within a few minutes of each other")
+    return jsonify({"id": sid, "message": f"Queued for {len(page_ids)} page(s), {how}. It renders in a few minutes. "
+                                          "This page keeps you updated."})
 
 
 @app.route("/new-post/status", methods=["GET"])
@@ -3048,13 +3182,19 @@ def newpost_status():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT key, value FROM app_settings WHERE key IN (%s, %s, %s)",
-                    (f"job_{sid}", f"job_{sid}_result", f"job_{sid}_posting"))
+        cur.execute("SELECT key, value FROM app_settings WHERE key IN (%s, %s, %s, %s)",
+                    (f"job_{sid}", f"job_{sid}_result", f"job_{sid}_posting", f"sched_{sid}"))
         rows = {r[0]: r[1] for r in cur.fetchall()}
         cur.close()
         conn.close()
     except Exception:
         rows = {}
+    if f"sched_{sid}" in rows:
+        try:
+            text, finished = _sched_summary(json.loads(rows[f"sched_{sid}"])["rows"], time.time())
+            return jsonify({"state": "done" if finished else "scheduled", "message": text})
+        except Exception:
+            pass
     if f"job_{sid}_result" in rows:
         return jsonify({"state": "done", "message": "Finished: " + rows[f"job_{sid}_result"][:500]})
     if f"job_{sid}_posting" in rows:
@@ -3264,6 +3404,7 @@ threading.Thread(target=_clip_queue_loop, daemon=True).start()
 threading.Thread(target=_ig_token_refresh_loop, daemon=True).start()
 threading.Thread(target=_quote_scheduler_loop, daemon=True).start()
 threading.Thread(target=_auto_feed_loop, daemon=True).start()
+threading.Thread(target=_scheduler_loop, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))

@@ -44,16 +44,22 @@ def build_job(spec, public_base):
     collabs = [str(c).lstrip("@") for c in spec.get("collaborators", [])][:3]
     if not all(HANDLE_RE.match(h) for h in tags + collabs):
         raise ValueError("bad username in tags or collabs")
-    pages = sorted({int(p) for p in spec.get("page_ids", [])})
+    pages = []
+    for p in spec.get("page_ids", []):                 # keep the order they were ticked in
+        if int(p) not in pages:
+            pages.append(int(p))
     if not pages:
         raise ValueError("no pages")
+    gap = float(spec.get("gap_hours") or 0)
+    if gap < 0 or gap > 24 or (0 < gap < 0.25):
+        raise ValueError("bad gap")
     caption = str(spec.get("caption", "")).strip()[:2200]
     overlay = str(spec.get("overlay", "")).strip()[:80]
     copy = [{"overlay": overlay, "caption": caption}] * len(pages)
     variants = af.make_variants({"id": spec["id"]}, pages, copy)   # small per-page crop/tone differences
     for v in variants:
         v["tags"], v["collaborators"] = tags, collabs
-    return {"id": spec["id"], "url": spec["url"], "render": "remote", "footer": "",
+    return {"id": spec["id"], "url": spec["url"], "render": "remote", "footer": "", "gap_hours": gap,
             "strip": strip_for(platform, channel), "variants": variants}
 
 
@@ -85,6 +91,7 @@ def main():
             rw.process_job(job, store, public_base, int(os.environ.get("RENDER_WORKERS", "3")))
             queue = store.get_json("auto/queue.json", []) or []
             queue.append({"id": sid, "created": int(time.time()), "stagger_minutes": [1, 3],
+                          "gap_hours": job.get("gap_hours", 0),
                           "title": spec.get("caption", "")[:60], "channel": spec.get("channel", "")})
             store.put_json("auto/queue.json", queue[-60:])
             print(f"[submit] {sid}: queued for the bot", flush=True)
