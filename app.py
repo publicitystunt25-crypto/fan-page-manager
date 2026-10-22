@@ -2842,9 +2842,9 @@ def upload_file():
     return jsonify({"url": f"{_render_public_base()}/{key}"})
 
 
-# ── SUBMIT PAGE: upload your own video, choose the strip channel, pages, tags / collabs and caption ───────────────
+# ── NEW-POST PAGE (/new-post): upload your own video, choose the strip channel, pages, tags / collabs and caption ───────────────
 # Uses the same passcode and storage keys as /upload. The video goes to the bucket under uploads/ (via /upload/file),
-# then /submit/job writes a job file to submissions/<id>.json. A GitHub worker (submit_worker.py, started by a timer)
+# then /new-post/job writes a job file to submissions/<id>.json. A GitHub worker (submit_worker.py, started by a timer)
 # renders it and hands it to this bot through auto/queue.json, exactly like the auto feed.
 HANDLE_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 CHANNEL_RE = re.compile(r"^[A-Za-z0-9_]{2,40}$")
@@ -2881,7 +2881,7 @@ def _handles(raw, limit):
 
 SUBMIT_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Submit a clip</title>
+<title>New post</title>
 <style>
 :root{--bg:#fff;--fg:#1a1a1a;--mut:#666;--line:#d9d9d9;--acc:#2358d6;--ok:#157347;--bad:#b42318}
 @media (prefers-color-scheme:dark){:root{--bg:#121212;--fg:#ececec;--mut:#9a9a9a;--line:#333;--acc:#6f9bff;--ok:#5fd08d;--bad:#ff8a80}}
@@ -2895,7 +2895,7 @@ button:disabled{opacity:.5}.row{display:flex;gap:8px}.row>*{flex:1}.pages label{
 .pages input{width:auto}.bar{height:8px;border-radius:4px;background:var(--line);margin-top:16px;overflow:hidden;display:none}.bar i{display:block;height:100%;width:0;background:var(--acc)}
 #msg{margin-top:16px}.ok{color:var(--ok)}.bad{color:var(--bad)}#form{display:none}.pv{color:var(--mut);font-size:14px;margin-top:6px}
 </style></head><body><main>
-<h1>Submit a clip</h1><p class="s">Upload a video, pick what goes on the strip, which pages post it, and the caption.</p>
+<h1>New post</h1><p class="s">Upload a video, pick what goes on the strip, which pages post it, and the caption.</p>
 <div id="lock"><label for="k">Passcode</label><input id="k" type="password" autocomplete="off"><button id="unlock">Unlock</button></div>
 <div id="form">
   <label for="f">Video <small>mp4, mov, m4v or webm, up to __MAX__ MB</small></label><input id="f" type="file" accept="video/*,.mp4,.mov,.m4v,.webm">
@@ -2919,7 +2919,7 @@ const preview=()=>{const p=$("plat").value,n=$("chan").value.trim().replace(/^@/
   $("pv").textContent=p==="none"?"No strip will be added.":(n?("Strip will read "+(p==="kick"?"KICK.COM/":"TWITCH.TV/")+n.toUpperCase()):"")};
 $("plat").onchange=$("chan").oninput=preview;preview();
 $("unlock").onclick=async()=>{KEY=$("k").value;say("Checking...");
-  const r=await fetch("/submit/pages",{headers:{"X-Upload-Key":KEY}});
+  const r=await fetch("/new-post/pages",{headers:{"X-Upload-Key":KEY}});
   if(r.status===401){say("Wrong passcode.","bad");return}
   if(!r.ok){say("The server is not ready ("+r.status+").","bad");return}
   const d=await r.json();$("lock").style.display="none";$("form").style.display="block";say("");
@@ -2930,7 +2930,7 @@ $("unlock").onclick=async()=>{KEY=$("k").value;say("Checking...");
     const t=document.createElement("span");t.textContent=p.name+"  ("+p.used+"/"+d.cap+" today)";l.appendChild(t);
     if(p.used>=d.cap){c.disabled=true}$("pages").appendChild(l)})};
 const poll=id=>{const t=setInterval(async()=>{
-  const r=await fetch("/submit/status?id="+encodeURIComponent(id),{headers:{"X-Upload-Key":KEY}});
+  const r=await fetch("/new-post/status?id="+encodeURIComponent(id),{headers:{"X-Upload-Key":KEY}});
   if(!r.ok)return;const d=await r.json();say(d.message,d.state==="failed"?"bad":(d.state==="done"?"ok":""));
   if(d.state==="done"||d.state==="failed")clearInterval(t)},10000)};
 $("go").onclick=()=>{
@@ -2947,7 +2947,7 @@ $("go").onclick=()=>{
     if(x.status!==200||!r.url){$("go").disabled=false;return say(r.error||("Upload failed ("+x.status+")"),"bad")}
     say("Uploaded. Queuing...");
     const split=s=>s.split(",").map(v=>v.trim()).filter(Boolean);
-    const j=await fetch("/submit/job",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+    const j=await fetch("/new-post/job",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
       key:KEY,url:r.url,platform:$("plat").value,channel:$("chan").value.trim(),page_ids:pages,tags:split($("tags").value),
       collaborators:split($("collab").value),caption:$("cap").value,overlay:$("ov").value.trim()})});
     const d=await j.json();$("go").disabled=false;
@@ -2957,17 +2957,17 @@ $("go").onclick=()=>{
 </script></body></html>"""
 
 
-@app.route("/submit", methods=["GET"])
-def submit_page():
+@app.route("/new-post", methods=["GET"])
+def newpost_page():
     missing = _upload_missing()
     if missing:
-        return Response("Submit is not set up yet. Missing on the server: " + ", ".join(missing), status=503, mimetype="text/plain")
+        return Response("The new-post page is not set up yet. Missing on the server: " + ", ".join(missing), status=503, mimetype="text/plain")
     return Response(SUBMIT_PAGE.replace("__MAX__", str(UPLOAD_MAX_MB)).replace("__CAP__", str(MAX_POSTS_PER_PAGE_PER_DAY)),
                     mimetype="text/html")
 
 
-@app.route("/submit/pages", methods=["GET"])
-def submit_pages():
+@app.route("/new-post/pages", methods=["GET"])
+def newpost_pages():
     if _upload_missing():
         return jsonify({"error": "not set up"}), 503
     if not _upload_key_ok(request.headers.get("X-Upload-Key")):
@@ -2987,8 +2987,8 @@ def submit_pages():
                     "pages": [{"id": r["id"], "name": r["page_name"], "used": used.get(r["id"], 0)} for r in rows]})
 
 
-@app.route("/submit/job", methods=["POST"])
-def submit_job():
+@app.route("/new-post/job", methods=["POST"])
+def newpost_job():
     if _upload_missing():
         return jsonify({"error": "not set up"}), 503
     d = request.get_json(silent=True) or {}
@@ -3037,8 +3037,8 @@ def submit_job():
                                           "spaced a minute or two apart. This page keeps you updated."})
 
 
-@app.route("/submit/status", methods=["GET"])
-def submit_status():
+@app.route("/new-post/status", methods=["GET"])
+def newpost_status():
     if not _upload_key_ok(request.headers.get("X-Upload-Key")):
         return jsonify({"error": "wrong passcode"}), 401
     sid = request.args.get("id", "")
