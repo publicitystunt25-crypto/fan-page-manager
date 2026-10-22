@@ -15,7 +15,7 @@ on:
         default: false
 
 concurrency:
-  group: auto-feed
+  group: queue-writers
   cancel-in-progress: false
 
 jobs:

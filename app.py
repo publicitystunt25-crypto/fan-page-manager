@@ -2842,6 +2842,235 @@ def upload_file():
     return jsonify({"url": f"{_render_public_base()}/{key}"})
 
 
+# ── SUBMIT PAGE: upload your own video, choose the strip channel, pages, tags / collabs and caption ───────────────
+# Uses the same passcode and storage keys as /upload. The video goes to the bucket under uploads/ (via /upload/file),
+# then /submit/job writes a job file to submissions/<id>.json. A GitHub worker (submit_worker.py, started by a timer)
+# renders it and hands it to this bot through auto/queue.json, exactly like the auto feed.
+HANDLE_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
+CHANNEL_RE = re.compile(r"^[A-Za-z0-9_]{2,40}$")
+SUBMIT_ID_RE = re.compile(r"^auto_sub_\d+_[0-9a-f]{6}$")
+
+
+def _r2_client():
+    import boto3
+    return boto3.client("s3", region_name="auto",
+                        endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+                        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+                        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"])
+
+
+def _upload_key_ok(given):
+    import hmac
+    return bool(os.environ.get("UPLOAD_KEY")) and hmac.compare_digest(str(given or ""), os.environ["UPLOAD_KEY"])
+
+
+def _handles(raw, limit):
+    out = []
+    for h in (raw or []):
+        h = str(h).strip().lstrip("@")
+        if not h:
+            continue
+        if not HANDLE_RE.match(h):
+            raise ValueError(f"'{h}' is not a valid Instagram username")
+        if h not in out:
+            out.append(h)
+    if len(out) > limit:
+        raise ValueError(f"at most {limit} usernames here")
+    return out
+
+
+SUBMIT_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Submit a clip</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--mut:#666;--line:#d9d9d9;--acc:#2358d6;--ok:#157347;--bad:#b42318}
+@media (prefers-color-scheme:dark){:root{--bg:#121212;--fg:#ececec;--mut:#9a9a9a;--line:#333;--acc:#6f9bff;--ok:#5fd08d;--bad:#ff8a80}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,sans-serif}
+main{max-width:560px;margin:0 auto;padding:24px 16px 64px}h1{font-size:22px;margin:0 0 4px}p.s{color:var(--mut);margin:0 0 18px}
+label{display:block;font-weight:600;margin:18px 0 6px}small{display:block;color:var(--mut);font-weight:400;margin-top:2px}
+input[type=password],input[type=text],input[type=file],select,textarea{width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--fg);font:inherit}
+textarea{min-height:110px;resize:vertical}
+button{width:100%;margin-top:20px;padding:14px;border:0;border-radius:10px;background:var(--acc);color:#fff;font:600 16px system-ui;cursor:pointer}
+button:disabled{opacity:.5}.row{display:flex;gap:8px}.row>*{flex:1}.pages label{display:flex;gap:10px;align-items:center;font-weight:400;margin:6px 0;padding:10px;border:1px solid var(--line);border-radius:10px}
+.pages input{width:auto}.bar{height:8px;border-radius:4px;background:var(--line);margin-top:16px;overflow:hidden;display:none}.bar i{display:block;height:100%;width:0;background:var(--acc)}
+#msg{margin-top:16px}.ok{color:var(--ok)}.bad{color:var(--bad)}#form{display:none}.pv{color:var(--mut);font-size:14px;margin-top:6px}
+</style></head><body><main>
+<h1>Submit a clip</h1><p class="s">Upload a video, pick what goes on the strip, which pages post it, and the caption.</p>
+<div id="lock"><label for="k">Passcode</label><input id="k" type="password" autocomplete="off"><button id="unlock">Unlock</button></div>
+<div id="form">
+  <label for="f">Video <small>mp4, mov, m4v or webm, up to __MAX__ MB</small></label><input id="f" type="file" accept="video/*,.mp4,.mov,.m4v,.webm">
+  <label>Strip at the bottom <small>the channel name shown under the video</small></label>
+  <div class="row"><select id="plat"><option value="kick">Kick</option><option value="twitch">Twitch</option><option value="none">No strip</option></select>
+  <input id="chan" type="text" placeholder="channel name, e.g. adinross" autocapitalize="none" autocomplete="off"></div>
+  <div class="pv" id="pv"></div>
+  <label>Pages to post on <small>one or two is safest; each page is limited to __CAP__ posts a day</small></label><div class="pages" id="pages"></div>
+  <label for="tags">Tag these Instagram accounts <small>usernames separated by commas (shows as tagged in the video)</small></label><input id="tags" type="text" placeholder="e.g. adinross, someone" autocapitalize="none" autocomplete="off">
+  <label for="collab">Invite as collab <small>up to 3 usernames, comma separated (they get an invite to co-author the post)</small></label><input id="collab" type="text" autocapitalize="none" autocomplete="off">
+  <label for="cap">Caption</label><textarea id="cap"></textarea>
+  <label for="ov">Text on the video <small>optional, a short line shown over the video</small></label><input id="ov" type="text" maxlength="80">
+  <button id="go">Upload and submit</button><div class="bar" id="bar"><i id="fill"></i></div>
+</div>
+<div id="msg" role="status"></div>
+</main><script>
+const $=id=>document.getElementById(id);let KEY="";
+const say=(t,c)=>{$("msg").className=c||"";$("msg").textContent=t};
+const preview=()=>{const p=$("plat").value,n=$("chan").value.trim().replace(/^@/,"");
+  $("chan").style.display=p==="none"?"none":"";
+  $("pv").textContent=p==="none"?"No strip will be added.":(n?("Strip will read "+(p==="kick"?"KICK.COM/":"TWITCH.TV/")+n.toUpperCase()):"")};
+$("plat").onchange=$("chan").oninput=preview;preview();
+$("unlock").onclick=async()=>{KEY=$("k").value;say("Checking...");
+  const r=await fetch("/submit/pages",{headers:{"X-Upload-Key":KEY}});
+  if(r.status===401){say("Wrong passcode.","bad");return}
+  if(!r.ok){say("The server is not ready ("+r.status+").","bad");return}
+  const d=await r.json();$("lock").style.display="none";$("form").style.display="block";say("");
+  $("pages").innerHTML="";
+  if(!d.pages.length){$("pages").textContent="No pages are switched on in the bot right now."}
+  d.pages.forEach(p=>{const l=document.createElement("label"),c=document.createElement("input");
+    c.type="checkbox";c.value=p.id;l.appendChild(c);
+    const t=document.createElement("span");t.textContent=p.name+"  ("+p.used+"/"+d.cap+" today)";l.appendChild(t);
+    if(p.used>=d.cap){c.disabled=true}$("pages").appendChild(l)})};
+const poll=id=>{const t=setInterval(async()=>{
+  const r=await fetch("/submit/status?id="+encodeURIComponent(id),{headers:{"X-Upload-Key":KEY}});
+  if(!r.ok)return;const d=await r.json();say(d.message,d.state==="failed"?"bad":(d.state==="done"?"ok":""));
+  if(d.state==="done"||d.state==="failed")clearInterval(t)},10000)};
+$("go").onclick=()=>{
+  const file=$("f").files[0],pages=[...document.querySelectorAll("#pages input:checked")].map(c=>+c.value);
+  if(!file)return say("Choose a video first.","bad");
+  if(!pages.length)return say("Pick at least one page.","bad");
+  if(!$("cap").value.trim())return say("Write a caption.","bad");
+  if($("plat").value!=="none"&&!$("chan").value.trim())return say("Enter the channel name for the strip.","bad");
+  const fd=new FormData();fd.append("key",KEY);fd.append("file",file);
+  const x=new XMLHttpRequest();x.open("POST","/upload/file");$("go").disabled=true;$("bar").style.display="block";say("Uploading...");
+  x.upload.onprogress=e=>{if(e.lengthComputable)$("fill").style.width=(100*e.loaded/e.total)+"%"};
+  x.onerror=()=>{$("go").disabled=false;say("Network error, try again.","bad")};
+  x.onload=async()=>{let r={};try{r=JSON.parse(x.responseText)}catch(e){}
+    if(x.status!==200||!r.url){$("go").disabled=false;return say(r.error||("Upload failed ("+x.status+")"),"bad")}
+    say("Uploaded. Queuing...");
+    const split=s=>s.split(",").map(v=>v.trim()).filter(Boolean);
+    const j=await fetch("/submit/job",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+      key:KEY,url:r.url,platform:$("plat").value,channel:$("chan").value.trim(),page_ids:pages,tags:split($("tags").value),
+      collaborators:split($("collab").value),caption:$("cap").value,overlay:$("ov").value.trim()})});
+    const d=await j.json();$("go").disabled=false;
+    if(!j.ok)return say(d.error||"Could not queue it.","bad");
+    say(d.message);poll(d.id)};
+  x.send(fd)};
+</script></body></html>"""
+
+
+@app.route("/submit", methods=["GET"])
+def submit_page():
+    missing = _upload_missing()
+    if missing:
+        return Response("Submit is not set up yet. Missing on the server: " + ", ".join(missing), status=503, mimetype="text/plain")
+    return Response(SUBMIT_PAGE.replace("__MAX__", str(UPLOAD_MAX_MB)).replace("__CAP__", str(MAX_POSTS_PER_PAGE_PER_DAY)),
+                    mimetype="text/html")
+
+
+@app.route("/submit/pages", methods=["GET"])
+def submit_pages():
+    if _upload_missing():
+        return jsonify({"error": "not set up"}), 503
+    if not _upload_key_ok(request.headers.get("X-Upload-Key")):
+        return jsonify({"error": "wrong passcode"}), 401
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT id, page_name FROM fan_pages WHERE active=TRUE AND ig_account_id IS NOT NULL AND page_group='clipper' "
+                "ORDER BY page_name")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    try:
+        used = _posts_last_24h([r["id"] for r in rows]) if rows else {}
+    except Exception:
+        used = {}
+    return jsonify({"cap": MAX_POSTS_PER_PAGE_PER_DAY,
+                    "pages": [{"id": r["id"], "name": r["page_name"], "used": used.get(r["id"], 0)} for r in rows]})
+
+
+@app.route("/submit/job", methods=["POST"])
+def submit_job():
+    if _upload_missing():
+        return jsonify({"error": "not set up"}), 503
+    d = request.get_json(silent=True) or {}
+    if not _upload_key_ok(d.get("key")):
+        return jsonify({"error": "wrong passcode"}), 401
+    try:
+        base = _render_public_base()
+        url = str(d.get("url", ""))
+        if not url.startswith(base + "/uploads/"):
+            raise ValueError("the video must be one uploaded through this page")
+        platform = d.get("platform", "none")
+        channel = str(d.get("channel", "")).strip().lstrip("@")
+        if platform not in ("kick", "twitch", "none"):
+            raise ValueError("pick Kick, Twitch or no strip")
+        if platform != "none" and not CHANNEL_RE.match(channel):
+            raise ValueError("the channel name can only use letters, numbers and underscores")
+        caption = str(d.get("caption", "")).strip()
+        if not caption or len(caption) > 2200:
+            raise ValueError("the caption must be between 1 and 2200 characters")
+        overlay = str(d.get("overlay", "")).strip()[:80]
+        tags, collabs = _handles(d.get("tags"), 20), _handles(d.get("collaborators"), 3)
+        page_ids = sorted({int(p) for p in (d.get("page_ids") or [])})
+        if not page_ids:
+            raise ValueError("pick at least one page")
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM fan_pages WHERE active=TRUE AND page_group='clipper' AND id = ANY(%s)", (page_ids,))
+        ok_ids = {r[0] for r in cur.fetchall()}
+        cur.close()
+        conn.close()
+        if set(page_ids) - ok_ids:
+            raise ValueError("one of those pages is not switched on")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    sid = f"auto_sub_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    spec = {"id": sid, "created": int(time.time()), "url": url, "platform": platform, "channel": channel,
+            "page_ids": page_ids, "tags": tags, "collaborators": collabs, "caption": caption, "overlay": overlay}
+    try:
+        _r2_client().put_object(Bucket=os.environ["R2_BUCKET"], Key=f"submissions/{sid}.json",
+                                Body=json.dumps(spec).encode("utf-8"), ContentType="application/json", CacheControl="no-store")
+    except Exception as e:
+        print(f"[submit] could not store the job: {type(e).__name__}: {str(e)[:160]}")
+        return jsonify({"error": "could not save the job to storage"}), 502
+    print(f"[submit] queued {sid} for pages {page_ids}")
+    return jsonify({"id": sid, "message": "Queued. It renders in a few minutes, then posts to the pages you picked, "
+                                          "spaced a minute or two apart. This page keeps you updated."})
+
+
+@app.route("/submit/status", methods=["GET"])
+def submit_status():
+    if not _upload_key_ok(request.headers.get("X-Upload-Key")):
+        return jsonify({"error": "wrong passcode"}), 401
+    sid = request.args.get("id", "")
+    if not SUBMIT_ID_RE.match(sid):
+        return jsonify({"error": "bad id"}), 400
+    base = _render_public_base()
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT key, value FROM app_settings WHERE key IN (%s, %s, %s)",
+                    (f"job_{sid}", f"job_{sid}_result", f"job_{sid}_posting"))
+        rows = {r[0]: r[1] for r in cur.fetchall()}
+        cur.close()
+        conn.close()
+    except Exception:
+        rows = {}
+    if f"job_{sid}_result" in rows:
+        return jsonify({"state": "done", "message": "Finished: " + rows[f"job_{sid}_result"][:500]})
+    if f"job_{sid}_posting" in rows:
+        return jsonify({"state": "posting", "message": "Posting now, one page at a time..."})
+    try:
+        st = requests.get(f"{base}/submissions/{sid}.status.json", timeout=15, headers={"Cache-Control": "no-cache"})
+        if st.status_code == 200 and st.json().get("state") == "failed":
+            return jsonify({"state": "failed", "message": "Rendering failed: " + str(st.json().get("error", ""))[:300]})
+        mf = requests.get(f"{base}/manifests/{sid}.json", timeout=15, headers={"Cache-Control": "no-cache"})
+        if mf.status_code == 200:
+            return jsonify({"state": "rendered", "message": "Rendered. Waiting for the bot to start posting..."})
+    except Exception:
+        pass
+    return jsonify({"state": "waiting", "message": "Waiting to be rendered (a few minutes)..."})
+
+
 # ── PAGE DISPLAY NAMES (page_names.json: {"<fan_pages id>": "Name"}; applied at startup, survives reconnects) ──
 
 PAGE_NAMES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_names.json")

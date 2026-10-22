@@ -70,6 +70,18 @@ class Store:
             self.s3.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType="application/json",
                                CacheControl="no-store")
 
+    def list_keys(self, prefix):
+        if self.local:
+            out = []
+            for root, _, files in os.walk(os.path.join(self.local, prefix)):
+                for f in files:
+                    out.append(os.path.relpath(os.path.join(root, f), self.local).replace(os.sep, "/"))
+            return out
+        out = []
+        for page in self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=prefix):
+            out += [o["Key"] for o in page.get("Contents", [])]
+        return out
+
     def get_json(self, key, default=None):
         if self.local:
             p = os.path.join(self.local, key)
