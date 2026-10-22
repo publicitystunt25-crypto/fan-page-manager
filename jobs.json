@@ -1,5 +1,13 @@
 [
   {
+    "id": "respace_khaotic_20261022",
+    "fix_schedule": {
+      "id": "auto_sub_1792692424_40bb07",
+      "restart_in_minutes": 5,
+      "gap_hours": 1
+    }
+  },
+  {
     "id": "fix_khaotic_tags_20261022",
     "fix_schedule": {
       "id": "auto_sub_1792692424_40bb07",

@@ -2620,9 +2620,13 @@ def _fix_schedule_worker(job):
         sched = json.loads(row[0])
         tagmap = {k.lower().lstrip("@"): v.lstrip("@") for k, v in (spec.get("tags") or {}).items()}
         fixed = 0
+        slot = 0
         for r in sched["rows"]:
             if r["status"] != "pending":
                 continue
+            if spec.get("restart_in_minutes") is not None:       # re-space the waiting posts from now
+                r["post_at"] = int(time.time() + spec["restart_in_minutes"] * 60 + slot * float(spec.get("gap_hours", 1)) * 3600)
+                slot += 1
             it = r["item"]
             new_tags = []
             for t in it.get("tags", []):
