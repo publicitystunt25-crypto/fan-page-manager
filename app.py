@@ -2599,6 +2599,48 @@ def _scheduler_tick(now=None):
             _set_setting(key, json.dumps(sched))
 
 
+def _fix_schedule_worker(job):
+    """One-off edit of the posts that are still WAITING in a spaced schedule (posted ones are never touched).
+    job["fix_schedule"] = {"id": "<job id>", "tags": {"wrong": "right"}, "text": {"wrong": "right"}}
+    tags are replaced by username (any case); text replacements apply to each waiting post's caption."""
+    spec = job["fix_schedule"]
+    sid = spec["id"]
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM app_settings WHERE key=%s", (f"sched_{sid}",))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row:
+            raise RuntimeError("schedule not found")
+        sched = json.loads(row[0])
+        tagmap = {k.lower().lstrip("@"): v.lstrip("@") for k, v in (spec.get("tags") or {}).items()}
+        fixed = 0
+        for r in sched["rows"]:
+            if r["status"] != "pending":
+                continue
+            it = r["item"]
+            new_tags = []
+            for t in it.get("tags", []):
+                t = tagmap.get(t.lower(), t)
+                if t not in new_tags:
+                    new_tags.append(t)
+            it["tags"] = new_tags
+            for old, new in (spec.get("text") or {}).items():
+                it["caption"] = it["caption"].replace(old, new)
+            fixed += 1
+        _set_setting(f"sched_{sid}", json.dumps(sched))
+        summary = f"fixed {fixed} waiting posts"
+    except Exception as e:
+        summary = f"failed: {type(e).__name__}: {str(e)[:150]}"
+    print(f"[fix-schedule] {job['id']}: {summary}")
+    try:
+        _set_setting(f"job_{job['id']}_result", summary)
+    except Exception as e:
+        print(f"[fix-schedule] could not store result: {type(e).__name__}")
+
+
 def _scheduler_loop():
     time.sleep(40)
     while True:
@@ -2675,6 +2717,12 @@ def _run_jobs_once():
                                ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
                 if cur.fetchone():
                     threading.Thread(target=_delete_posts_worker, args=(job,), daemon=True).start()
+                continue
+            if isinstance(job.get("fix_schedule"), dict) and isinstance(job.get("id"), str):
+                cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
+                               ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
+                if cur.fetchone():
+                    threading.Thread(target=_fix_schedule_worker, args=(job,), daemon=True).start()
                 continue
             if isinstance(job.get("probe"), dict) and isinstance(job.get("id"), str):
                 cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')

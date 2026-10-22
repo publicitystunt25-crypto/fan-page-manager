@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "id": "fix_khaotic_tags_20261022",
+    "fix_schedule": {
+      "id": "auto_sub_1792692424_40bb07",
+      "tags": {
+        "originalhotboyturl": "therealhotboyturk"
+      },
+      "text": {
+        "@khoatic305": "@khaotic305"
+      }
+    }
+  }
+]
