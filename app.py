@@ -2134,6 +2134,46 @@ def _probe_worker(job):
     except Exception as e:
         print(f"[probe] could not store result: {type(e).__name__}")
 
+def _health_worker(job):
+    """READ-ONLY. Asks Instagram, with each active page's saved login, who the account is and how it is doing, and
+    reports what Instagram answers (or the error it gives). Posts nothing and changes nothing."""
+    out = {}
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, page_name, ig_account_id, page_access_token, auth_type FROM fan_pages "
+                    "WHERE active=TRUE AND ig_account_id IS NOT NULL ORDER BY id")
+        pages = cur.fetchall()
+        cur.close()
+        conn.close()
+        for page in pages:
+            g = _graph_for(page.get("auth_type"))
+            tok = page["page_access_token"]
+            try:
+                r = requests.get(f"{g}/{page['ig_account_id']}",
+                                 params={"fields": "username,followers_count,media_count", "access_token": tok}, timeout=20).json()
+                if "error" in r:
+                    out[page["page_name"]] = "ERROR: " + (r["error"].get("message") or "")[:140]
+                    continue
+                m = requests.get(f"{g}/{page['ig_account_id']}/media",
+                                 params={"fields": "timestamp", "limit": 1, "access_token": tok}, timeout=20).json()
+                last = ((m.get("data") or [{}])[0].get("timestamp") or "")[:10]
+                lim = requests.get(f"{g}/{page['ig_account_id']}/content_publishing_limit",
+                                   params={"fields": "quota_usage,config", "access_token": tok}, timeout=20).json()
+                used = ((lim.get("data") or [{}])[0].get("quota_usage"))
+                out[page["page_name"]] = (f"OK @{r.get('username')} followers={r.get('followers_count')} "
+                                          f"posts={r.get('media_count')} last_post={last or '?'} publish_quota_used_24h={used}")
+            except Exception as e:
+                out[page["page_name"]] = f"could not check: {type(e).__name__}"
+        summary = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
+    except Exception as e:
+        summary = json.dumps({"failed": type(e).__name__})
+    print(f"[health] {job['id']}: {summary[:300]}")
+    try:
+        _set_setting(f"job_{job['id']}_result", summary)
+    except Exception as e:
+        print(f"[health] could not store result: {type(e).__name__}")
+
 def _audit_worker(job):
     """READ-ONLY. For each page, list the posts that were NOT published by the bot (not in post_log), so the owner
     can decide what to delete. Also re-checks whether posts we already deleted are really gone.
@@ -2717,6 +2757,12 @@ def _run_jobs_once():
                                ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
                 if cur.fetchone():
                     threading.Thread(target=_delete_old_worker, args=(job,), daemon=True).start()
+                continue
+            if isinstance(job.get("health"), dict) and isinstance(job.get("id"), str):
+                cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
+                               ON CONFLICT (key) DO NOTHING RETURNING key""", (f"job_{job['id']}",))
+                if cur.fetchone():
+                    threading.Thread(target=_health_worker, args=(job,), daemon=True).start()
                 continue
             if isinstance(job.get("audit"), dict) and isinstance(job.get("id"), str):
                 cur.execute("""INSERT INTO app_settings (key, value) VALUES (%s, 'started')
