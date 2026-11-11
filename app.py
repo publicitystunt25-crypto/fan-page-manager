@@ -2138,6 +2138,34 @@ def _health_worker(job):
     """READ-ONLY. Asks Instagram, with each active page's saved login, who the account is and how it is doing, and
     reports what Instagram answers (or the error it gives). Posts nothing and changes nothing."""
     out = {}
+    if job["health"].get("since"):       # per-post numbers for the posts logged since this date (views, likes, ...)
+        try:
+            conn = get_conn()
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("""SELECT l.ig_post_id, l.posted_at, f.page_name, f.page_access_token, f.auth_type
+                           FROM post_log l JOIN fan_pages f ON f.id = l.fan_page_id
+                           WHERE l.ig_post_id IS NOT NULL AND l.error IS NULL AND l.posted_at >= %s ORDER BY l.posted_at""",
+                        (job["health"]["since"],))
+            posts = cur.fetchall()
+            cur.close()
+            conn.close()
+            for p in posts:
+                g, tok, pid = _graph_for(p.get("auth_type")), p["page_access_token"], p["ig_post_id"]
+                vals = {}
+                for metric in ("views", "reach", "likes", "comments", "shares", "saved"):   # one by one: an unsupported one only skips itself
+                    r = requests.get(f"{g}/{pid}/insights", params={"metric": metric, "access_token": tok}, timeout=20).json()
+                    d = (r.get("data") or [{}])[0].get("values") or [{}]
+                    vals[metric] = d[0].get("value") if "data" in r and r["data"] else "n/a"
+                out[f"{p['page_name']} ({p['posted_at']:%m-%d %H:%M})"] = " ".join(f"{k}={v}" for k, v in vals.items())
+            summary = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
+        except Exception as e:
+            summary = json.dumps({"failed": f"{type(e).__name__}: {str(e)[:100]}"})
+        print(f"[health] {job['id']}: {summary[:300]}")
+        try:
+            _set_setting(f"job_{job['id']}_result", summary)
+        except Exception as e:
+            print(f"[health] could not store result: {type(e).__name__}")
+        return
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
