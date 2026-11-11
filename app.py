@@ -2158,6 +2158,16 @@ def _health_worker(job):
                 m = requests.get(f"{g}/{page['ig_account_id']}/media",
                                  params={"fields": "timestamp", "limit": 1, "access_token": tok}, timeout=20).json()
                 last = ((m.get("data") or [{}])[0].get("timestamp") or "")[:10]
+                if job["health"].get("engagement"):     # likes + comments on the last 10 posts, per post and per follower
+                    e = requests.get(f"{g}/{page['ig_account_id']}/media",
+                                     params={"fields": "like_count,comments_count", "limit": 10, "access_token": tok}, timeout=20).json()
+                    posts = e.get("data") or []
+                    likes = sum(int(p.get("like_count") or 0) for p in posts)
+                    coms = sum(int(p.get("comments_count") or 0) for p in posts)
+                    n, fol = max(len(posts), 1), max(int(r.get("followers_count") or 0), 1)
+                    out[page["page_name"]] = (f"followers={r.get('followers_count')} posts_checked={len(posts)} avg_likes={likes / n:.1f} "
+                                              f"avg_comments={coms / n:.1f} engagement_per_follower={(likes + coms) / n / fol * 100:.2f}%")
+                    continue
                 lim = requests.get(f"{g}/{page['ig_account_id']}/content_publishing_limit",
                                    params={"fields": "quota_usage,config", "access_token": tok}, timeout=20).json()
                 used = ((lim.get("data") or [{}])[0].get("quota_usage"))
