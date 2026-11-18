@@ -2134,10 +2134,41 @@ def _probe_worker(job):
     except Exception as e:
         print(f"[probe] could not store result: {type(e).__name__}")
 
+def _table_schema(cur, table):
+    cur.execute("SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = to_regclass(%s)", (table,))
+    row = cur.fetchone()
+    return row[0] if row else "?"
+
 def _health_worker(job):
     """READ-ONLY. Asks Instagram, with each active page's saved login, who the account is and how it is doing, and
     reports what Instagram answers (or the error it gives). Posts nothing and changes nothing."""
     out = {}
+    if job["health"].get("db_size"):     # how big this bot's tables are, and the whole database (the bot's tables + any others in it)
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            for t in ("fan_pages", "post_log", "post_metrics", "quote_queue", "clip_submissions", "app_settings"):
+                cur.execute("SELECT pg_total_relation_size(to_regclass(%s)), (SELECT count(*) FROM pg_class WHERE oid = to_regclass(%s))", (t, t))
+                size, exists = cur.fetchone()
+                if exists:
+                    cur.execute(f"SELECT count(*) FROM {t}")
+                    out[t] = f"{size} bytes, {cur.fetchone()[0]} rows, schema={_table_schema(cur, t)}"
+                else:
+                    out[t] = "missing"
+            cur.execute("SELECT pg_database_size(current_database()), current_schema()")
+            total, schema = cur.fetchone()
+            out["_database_total_bytes"], out["_current_schema"] = total, schema
+            cur.close()
+            conn.close()
+            summary = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
+        except Exception as e:
+            summary = json.dumps({"failed": f"{type(e).__name__}: {str(e)[:100]}"})
+        print(f"[health] {job['id']}: {summary[:300]}")
+        try:
+            _set_setting(f"job_{job['id']}_result", summary)
+        except Exception as e:
+            print(f"[health] could not store result: {type(e).__name__}")
+        return
     if job["health"].get("since"):       # per-post numbers for the posts logged since this date (views, likes, ...)
         try:
             conn = get_conn()
