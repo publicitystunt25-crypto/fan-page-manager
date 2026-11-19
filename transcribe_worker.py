@@ -23,6 +23,17 @@ def extract_audio(src, wav):
                    check=True, capture_output=True, timeout=300)
 
 
+def save_frames(src, jid, duration, store):
+    """Three still frames (20%, 50%, 80% in) uploaded as frames/<id>_1..3.jpg, to see what is on screen."""
+    d = float(duration or 30)
+    for n, frac in enumerate((0.2, 0.5, 0.8), 1):
+        jpg = f"{src}.f{n}.jpg"
+        subprocess.run([cr._ffmpeg_exe(), "-y", "-ss", str(round(d * frac, 1)), "-i", src, "-frames:v", "1",
+                        "-vf", "scale=640:-2", "-q:v", "4", jpg], check=True, capture_output=True, timeout=120)
+        store.put_file(f"frames/{jid}_{n}.jpg", jpg, "image/jpeg")
+        os.remove(jpg)
+
+
 def transcribe(wav, model):
     segments, info = model.transcribe(wav, beam_size=5, vad_filter=True)
     segs = [{"start": round(s.start, 1), "end": round(s.end, 1), "text": s.text.strip()} for s in segments]
@@ -36,7 +47,8 @@ def main():
         print("no transcribe.json")
         return 0
     store = Store()
-    todo = [j for j in jobs if j.get("id") and j.get("url") and not store.exists(f"transcripts/{j['id']}.json")]
+    todo = [j for j in jobs if j.get("id") and j.get("url") and (
+        not store.exists(f"transcripts/{j['id']}.json") or (j.get("frames") and not store.exists(f"frames/{j['id']}_1.jpg")))]
     if not todo:
         print("nothing to transcribe")
         return 0
@@ -49,11 +61,14 @@ def main():
             print(f"[transcribe] {jid}: downloading {job['url']}", flush=True)
             src, info = cr.download_clip(job["url"])
             wav = src + ".wav"
-            extract_audio(src, wav)
-            out = transcribe(wav, model)
-            out.update({"job": jid, "url": job["url"], "title": (info or {}).get("title"),
-                        "duration": (info or {}).get("duration"), "created": int(time.time())})
-            store.put_json(f"transcripts/{jid}.json", out)
+            if not store.exists(f"transcripts/{jid}.json"):
+                extract_audio(src, wav)
+                out = transcribe(wav, model)
+                out.update({"job": jid, "url": job["url"], "title": (info or {}).get("title"),
+                            "duration": (info or {}).get("duration"), "created": int(time.time())})
+                store.put_json(f"transcripts/{jid}.json", out)
+            if job.get("frames"):
+                save_frames(src, jid, (info or {}).get("duration"), store)
             for p in (src, wav):
                 if os.path.exists(p):
                     os.remove(p)
