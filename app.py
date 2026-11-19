@@ -2143,6 +2143,38 @@ def _health_worker(job):
     """READ-ONLY. Asks Instagram, with each active page's saved login, who the account is and how it is doing, and
     reports what Instagram answers (or the error it gives). Posts nothing and changes nothing."""
     out = {}
+    if job["health"].get("demographics"):    # where each page's followers are, by country (Instagram's own audience data)
+        try:
+            conn = get_conn()
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("SELECT page_name, ig_account_id, page_access_token, auth_type FROM fan_pages "
+                        "WHERE ig_account_id IS NOT NULL ORDER BY id")
+            for page in cur.fetchall():
+                g = _graph_for(page.get("auth_type"))
+                try:
+                    r = requests.get(f"{g}/{page['ig_account_id']}/insights",
+                                     params={"metric": "follower_demographics", "period": "lifetime", "metric_type": "total_value",
+                                             "breakdown": "country", "access_token": page["page_access_token"]}, timeout=20).json()
+                    if "error" in r:
+                        out[page["page_name"]] = "ERROR: " + (r["error"].get("message") or "")[:120]
+                        continue
+                    res = (((r.get("data") or [{}])[0].get("total_value") or {}).get("breakdowns") or [{}])[0].get("results") or []
+                    rows = sorted(((x.get("value", 0), (x.get("dimension_values") or ["?"])[0]) for x in res), reverse=True)
+                    total = sum(v for v, _ in rows) or 1
+                    out[page["page_name"]] = ", ".join(f"{c} {v / total * 100:.0f}%" for v, c in rows[:4]) or "no data"
+                except Exception as e:
+                    out[page["page_name"]] = f"could not check: {type(e).__name__}"
+            cur.close()
+            conn.close()
+            summary = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
+        except Exception as e:
+            summary = json.dumps({"failed": f"{type(e).__name__}: {str(e)[:100]}"})
+        print(f"[health] {job['id']}: {summary[:300]}")
+        try:
+            _set_setting(f"job_{job['id']}_result", summary)
+        except Exception as e:
+            print(f"[health] could not store result: {type(e).__name__}")
+        return
     if job["health"].get("db_size"):     # how big this bot's tables are, and the whole database (the bot's tables + any others in it)
         try:
             conn = get_conn()

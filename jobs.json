@@ -1,5 +1,11 @@
 [
   {
+    "id": "demographics_20261118",
+    "health": {
+      "demographics": true
+    }
+  },
+  {
     "id": "dbsize_20261118",
     "health": {
       "db_size": true
