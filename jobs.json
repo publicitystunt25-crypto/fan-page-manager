@@ -1,5 +1,45 @@
 [
   {
+    "id": "gta6_bike_v2_20261119",
+    "url": "https://www.twitch.tv/zackrawrr/clip/SpoopyRoughCroissantRaccAttack-emK6gSmZGuPlPfiw",
+    "render": "remote",
+    "channel": "zackrawrr",
+    "footer": "",
+    "variants": [
+      {
+        "page_ids": [
+          26
+        ],
+        "text": "ASMONGOLD ON A BIKE IN GTA 6",
+        "caption": "Asmongold on a bike in GTA 6 is exactly the chaos you'd expect 🚲😂 \"I'm the main character\" #GTA6 #Asmongold",
+        "crop": 1.0,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_pos": "bottom"
+      }
+    ]
+  },
+  {
+    "id": "gta6_bulldozer_v2_20261119",
+    "url": "https://www.twitch.tv/zackrawrr/clip/FuriousBlightedCormorantPrimeMe-ItvngvkK4jHaiiLI",
+    "render": "remote",
+    "channel": "zackrawrr",
+    "footer": "",
+    "variants": [
+      {
+        "page_ids": [
+          25
+        ],
+        "text": "FIRST TIME IN A BULLDOZER IN GTA 6",
+        "caption": "Asmongold's first time in a bulldozer in GTA 6 🚧 he can't believe you can do this. #GTA6 #Asmongold",
+        "crop": 1.0,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_pos": "bottom"
+      }
+    ]
+  },
+  {
     "id": "poststats_nov19_20261119",
     "health": {
       "since": "2026-11-19T00:00:00Z"
