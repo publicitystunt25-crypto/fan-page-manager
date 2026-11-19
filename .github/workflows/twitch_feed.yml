@@ -1,0 +1,57 @@
+name: Twitch feed
+
+# Once a day: take the last 24 hours of clips from the Twitch channels in twitch_feed.json that are tagged GTA 6, give each
+# page its own clip with a caption written from what is said and shown, render them and hand them to the bot through
+# auto/queue.json. Needs TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET in the repo's secrets (without them it does nothing).
+# Turn it off with "enabled": false in twitch_feed.json.
+on:
+  schedule:
+    - cron: "0 16 * * *"      # 12:00 ET / 11:00 CT, every day
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only choose clips and write the captions (result in twitch/last_run.json), post nothing"
+        type: boolean
+        default: false
+      force:
+        description: "Run even if it already posted today"
+        type: boolean
+        default: false
+
+concurrency:
+  group: queue-writers
+  cancel-in-progress: false
+
+jobs:
+  twitch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-autofeed.txt
+
+      - name: Install
+        run: pip install -r requirements-autofeed.txt
+
+      - name: Cache speech model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-small
+
+      - name: Pick, write, render and queue
+        run: python twitch_feed.py ${{ inputs.dry_run && '--dry-run' || '' }} ${{ inputs.force && '--force' || '' }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+          RENDER_WORKERS: "1"

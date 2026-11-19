@@ -1,0 +1,40 @@
+{
+  "enabled": true,
+  "channels": [
+    "jynxzi",
+    "zackrawrr"
+  ],
+  "display_names": {
+    "jynxzi": "Jynxzi",
+    "zackrawrr": "Asmongold"
+  },
+  "page_ids": [
+    27,
+    10,
+    19
+  ],
+  "game_keywords": [
+    "grand theft auto vi",
+    "grand theft auto 6",
+    "gta vi",
+    "gta 6"
+  ],
+  "hours_back": 24,
+  "min_seconds": 10,
+  "max_seconds": 90,
+  "min_views": 20,
+  "min_speech_words": 0,
+  "stagger_minutes": [
+    1,
+    3
+  ],
+  "skip_words": [
+    "nigger",
+    "faggot",
+    "tranny",
+    "retard",
+    "kill myself",
+    "suicide",
+    "rape"
+  ]
+}
