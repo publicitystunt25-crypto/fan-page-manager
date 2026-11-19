@@ -146,6 +146,11 @@ def main():
         print("[twitch] ANTHROPIC_API_KEY is not set - captions cannot be written")
         return 1
     store = rw.Store()
+    # nothing is kept: rendered videos from earlier days are deleted once they have had time to post
+    try:
+        print(f"[twitch] cleanup: removed {store.delete_old('videos/', rw.VIDEO_MAX_AGE_HOURS)} old video(s)", flush=True)
+    except Exception as e:
+        print(f"[twitch] cleanup skipped ({type(e).__name__})", flush=True)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     last = store.get_json("twitch/last_run.json", {}) or {}
     if not dry and not force and last.get("day") == today and last.get("status") == "queued":
