@@ -1,5 +1,23 @@
 [
   {
+    "id": "gta6_stableronaldo_20261119",
+    "url": "https://www.twitch.tv/stableronaldo/clip/CredulousMoistSproutFeelsBadMan-pWZzhQ8x7VxKff6n",
+    "footer": "",
+    "variants": [
+      {
+        "page_ids": [
+          25
+        ],
+        "text": "Nahhh GTA VI looks too real",
+        "caption": "Nahhh GTA VI looks too real",
+        "crop": 1.0,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_pos": "bottom"
+      }
+    ]
+  },
+  {
     "id": "demographics_20261118",
     "health": {
       "demographics": true
