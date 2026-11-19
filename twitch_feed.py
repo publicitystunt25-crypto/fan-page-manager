@@ -30,6 +30,7 @@ import auto_feed as af
 CONFIG = os.environ.get("TWITCH_FEED_CONFIG") or os.path.join(rw.HERE, "twitch_feed.json")
 ID_URL = "https://id.twitch.tv/oauth2/token"
 HELIX = "https://api.twitch.tv/helix"
+HASHTAGS = "#GTA6 #grandtheftauto6 #gtavi"  # on every GTA 6 post
 
 
 def app_token(client_id, secret):
@@ -190,7 +191,7 @@ def main():
                 report.append({"clip": clip["id"], "title": clip["title"], "result": f"rejected: {reason or 'no copy'}"})
                 seen.add(clip["id"])
                 continue
-            chosen.append({**clip, "overlay": overlay, "caption": caption + "\n\n#GTA6", "transcript": tr["text"][:300]})
+            chosen.append({**clip, "overlay": overlay, "caption": caption + "\n\n" + HASHTAGS, "transcript": tr["text"][:300]})
             report.append({"clip": clip["id"], "title": clip["title"], "result": "chosen", "overlay": overlay, "caption": caption})
         except Exception:
             print(f"[twitch] {clip['id']} could not be read:\n{traceback.format_exc()}", flush=True)
