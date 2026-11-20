@@ -1,5 +1,85 @@
 [
   {
+    "id": "gta6_jynxzi_BoldCheerfulZebraSwiftRage-VPWkjq343qhb_pPv_20261120",
+    "url": "https://www.twitch.tv/jynxzi/clip/BoldCheerfulZebraSwiftRage-VPWkjq343qhb_pPv",
+    "render": "remote",
+    "channel": "jynxzi",
+    "footer": "",
+    "variants": [
+      {
+        "page_ids": [
+          27
+        ],
+        "text": "JYNXZI TAKES A PLANE UP IN GTA 6",
+        "caption": "Jynxzi takes a crop duster up in GTA 6 and tries to land it ✈️ not as easy as it looks. #GTA6 #grandtheftauto6 #gtavi",
+        "crop": 1.0,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_pos": "bottom"
+      }
+    ]
+  },
+  {
+    "id": "gta6_zackrawrr_ArtisticFreezingClintmullinsTakeNRG-aCfbAdXFifjIDYho_20261120",
+    "url": "https://www.twitch.tv/zackrawrr/clip/ArtisticFreezingClintmullinsTakeNRG-aCfbAdXFifjIDYho",
+    "render": "remote",
+    "channel": "zackrawrr",
+    "footer": "",
+    "variants": [
+      {
+        "page_ids": [
+          10
+        ],
+        "text": "ASMONGOLD ON AN ATV IN GTA 6",
+        "caption": "Asmongold tears through an orchard on an ATV in GTA 6 🏍️ \"Hold on, it was a joke!\" #GTA6 #grandtheftauto6 #gtavi",
+        "crop": 1.0,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_pos": "bottom"
+      }
+    ]
+  },
+  {
+    "id": "gta6_jynxzi_ZanyAlertCaterpillarHassaanChop-uTYK7AXBgQ08x5QB_20261120",
+    "url": "https://www.twitch.tv/jynxzi/clip/ZanyAlertCaterpillarHassaanChop-uTYK7AXBgQ08x5QB",
+    "render": "remote",
+    "channel": "jynxzi",
+    "footer": "",
+    "variants": [
+      {
+        "page_ids": [
+          19
+        ],
+        "text": "JYNXZI'S GTA 6 FLIGHT ENDS FAST",
+        "caption": "Jynxzi's plane flight in GTA 6 ends the way you'd expect 😭 the reaction says it all. #GTA6 #grandtheftauto6 #gtavi",
+        "crop": 1.0,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_pos": "bottom"
+      }
+    ]
+  },
+  {
+    "id": "gta6_jynxzi_SlipperyBoringTubersLitFam-2FPvnv_um8Kh6vQH_20261120",
+    "url": "https://www.twitch.tv/jynxzi/clip/SlipperyBoringTubersLitFam-2FPvnv_um8Kh6vQH",
+    "render": "remote",
+    "channel": "jynxzi",
+    "footer": "",
+    "variants": [
+      {
+        "page_ids": [
+          1
+        ],
+        "text": "JYNXZI ON A SCOOTER IN GTA 6",
+        "caption": "Jynxzi hops on a scooter in GTA 6 and the road turns into chaos 🛵 #GTA6 #grandtheftauto6 #gtavi",
+        "crop": 1.0,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "strip_pos": "bottom"
+      }
+    ]
+  },
+  {
     "id": "poststats_nov19b_20261119",
     "health": {
       "since": "2026-11-19T00:00:00Z"
