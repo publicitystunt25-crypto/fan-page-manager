@@ -1,14 +1,13 @@
 """Twitch feed: runs once a day in GitHub Actions (see .github/workflows/twitch_feed.yml).
 
-For the Twitch channels in twitch_feed.json it lists the clips of the last 24 hours (Twitch's official API), keeps the ones
-tagged with the game from game_keywords (GTA 6), and gives each page in page_ids its OWN clip (the best-viewed clips that
+For the Twitch channels in twitch_feed.json it lists the clips of the last 24 hours (yt-dlp), keeps the ones that
+Claude sees are GTA 6 gameplay in the frames, and gives each page in page_ids its OWN clip (the best-viewed clips that
 pass the checks, one per page). Each clip is transcribed and looked at (three frames, judged by Claude), and gets a caption
 and an on-screen line written from what is said and shown. The versions are rendered with render_worker.process_job and
 appended to auto/queue.json, where the bot picks them up and posts them.
 State: twitch/seen.json (clips already used or rejected) and twitch/last_run.json (what happened; readable at <public base>/twitch/last_run.json).
 
-Environment: the R2 secrets, ANTHROPIC_API_KEY, TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET (a free app from dev.twitch.tv/console).
-Without the two Twitch values it does nothing. Flags: --dry-run (choose and write copy, render and queue nothing), --force (run again today).
+Environment: the R2 secrets and ANTHROPIC_API_KEY. No Twitch keys are needed (yt-dlp reads the public clips page). Flags: --dry-run (choose and write copy, render and queue nothing), --force (run again today).
 """
 import os
 import re
@@ -20,7 +19,6 @@ import subprocess
 import traceback
 from datetime import datetime, timezone, timedelta
 
-import requests
 
 import clip_render as cr
 import render_worker as rw
@@ -33,62 +31,43 @@ HELIX = "https://api.twitch.tv/helix"
 HASHTAGS = "#GTA6 #grandtheftauto6 #gtavi"  # on every GTA 6 post
 
 
-def app_token(client_id, secret):
-    r = requests.post(ID_URL, data={"client_id": client_id, "client_secret": secret, "grant_type": "client_credentials"}, timeout=20)
-    r.raise_for_status()
-    return r.json()["access_token"]
-
-
-def helix(path, params, client_id, token):
-    r = requests.get(f"{HELIX}{path}", params=params, timeout=20,
-                     headers={"Client-Id": client_id, "Authorization": f"Bearer {token}"})
-    r.raise_for_status()
-    return r.json().get("data", [])
-
-
-def list_clips(login, hours, client_id, token):
-    """Clips of the last `hours` hours of one channel, best-viewed first, each with its game's name."""
-    users = helix("/users", {"login": login}, client_id, token)
-    if not users:
-        print(f"[twitch] {login}: channel not found")
-        return []
-    now = datetime.now(timezone.utc)
-    clips = helix("/clips", {"broadcaster_id": users[0]["id"], "first": 100,
-                             "started_at": (now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                             "ended_at": now.strftime("%Y-%m-%dT%H:%M:%SZ")}, client_id, token)
-    ids = sorted({c["game_id"] for c in clips if c.get("game_id")})
-    games = {}
-    for i in range(0, len(ids), 100):
-        for g in helix("/games", [("id", x) for x in ids[i:i + 100]], client_id, token):
-            games[g["id"]] = g["name"]
+def list_clips(login, hours):
+    """Clips of the last 24 hours of one channel, best-viewed first (yt-dlp reads the public clips page, no keys needed)."""
+    import yt_dlp
+    rng = "24hr" if hours <= 24 else "7d"
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "playlistend": 40}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"https://www.twitch.tv/{login}/clips?range={rng}", download=False)
     out = []
-    for c in clips:
-        out.append({"id": c["id"], "url": f"https://www.twitch.tv/{login}/clip/{c['id']}", "title": c.get("title", ""), "duration": float(c.get("duration") or 0),
-                    "views": int(c.get("view_count") or 0), "game": games.get(c.get("game_id"), ""), "channel": login})
+    for e in (info or {}).get("entries") or []:
+        url = e.get("url") or ""
+        if "/clip/" not in url:
+            continue
+        out.append({"id": url.rsplit("/clip/", 1)[1], "url": url, "title": e.get("title") or "", "duration": float(e.get("duration") or 0),
+                    "views": int(e.get("view_count") or 0), "game": "", "channel": login})
     return sorted(out, key=lambda c: -c["views"])
 
 
-def candidates(cfg, seen, client_id, token):
+def candidates(cfg, seen):
     out = []
     for login in cfg["channels"]:
         try:
-            clips = list_clips(login, cfg.get("hours_back", 24), client_id, token)
+            clips = list_clips(login, cfg.get("hours_back", 24))
         except Exception as e:
             print(f"[twitch] {login}: could not list clips ({type(e).__name__}: {str(e)[:100]})")
             continue
-        kept = 0
+        kept = []
         for c in clips:
             if c["id"] in seen:
-                continue
-            if not any(k in c["game"].lower() for k in cfg["game_keywords"]):
                 continue
             if not (cfg.get("min_seconds", 10) <= c["duration"] <= cfg.get("max_seconds", 90)):
                 continue
             if c["views"] < cfg.get("min_views", 0):
                 continue
-            out.append(c)
-            kept += 1
-        print(f"[twitch] {login}: {len(clips)} clips in the last {cfg.get('hours_back', 24)}h, {kept} usable")
+            kept.append(c)
+        kept = kept[: int(cfg.get("max_checked_per_channel", 12))]
+        print(f"[twitch] {login}: {len(clips)} clips in the last {cfg.get('hours_back', 24)}h, {len(kept)} to check")
+        out += kept
     return sorted(out, key=lambda c: -c["views"])
 
 
@@ -110,8 +89,9 @@ def judge_and_write(clip, transcript, frames, streamer, key):
     content = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                                             "data": base64.b64encode(open(p, "rb").read()).decode()}} for p in frames]
     content.append({"type": "text", "text":
-        f"These are three frames from a short Twitch clip of the streamer {streamer} playing {clip['game']}.\n"
+        f"These are three frames from a short Twitch clip of the streamer {streamer} playing a game (maybe GTA 6).\n"
         f"Clip title: {clip['title']}\nTranscript (speech-to-text, may contain errors): {transcript[:1800]}\n\n"
+        "0) Decide if the footage is clearly Grand Theft Auto VI (GTA 6) gameplay (set \"gta6\" true only if you can see it is GTA 6 / Vice City style GTA gameplay, not another game or just the streamer talking).\n"
         "1) Decide if it is safe for a general-audience Instagram page. NOT safe: nudity, sexual content, graphic gore or "
         "injury, slurs or hate speech, drugs, a real child, or anything that identifies a private person.\n"
         "2) Write an Instagram Reel caption that makes people want to WATCH the clip. It must be about what is actually on "
@@ -121,7 +101,7 @@ def judge_and_write(clip, transcript, frames, streamer, key):
         "identify anyone from their face; no profanity; no @mentions or hashtags; do not say 'watch till the end', "
         "'part 2' or 'the full clip'.\n"
         "3) Write an on-screen line of 3 to 8 words in plain text, different from the caption.\n"
-        'Output only JSON: {"safe": true or false, "reason": "short", "overlay": "...", "caption": "..."}'})
+        'Output only JSON: {"gta6": true or false, "safe": true or false, "reason": "short", "overlay": "...", "caption": "..."}'})
     msg = anthropic.Anthropic(api_key=key).messages.create(
         model="claude-sonnet-5-5", max_tokens=1500, messages=[{"role": "user", "content": content}])
     raw = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
@@ -129,6 +109,8 @@ def judge_and_write(clip, transcript, frames, streamer, key):
     caption = str(d.get("caption", "")).strip()
     if caption and "gta 6" not in caption.lower():
         caption = "GTA 6: " + caption
+    if d.get("gta6") is not True:
+        return None, "not GTA 6", "", ""
     return bool(d.get("safe")) is True, str(d.get("reason", "")), str(d.get("overlay", "")).strip()[:80], caption[:600]
 
 
@@ -138,10 +120,7 @@ def main():
     if not cfg.get("enabled", True):
         print("[twitch] disabled in twitch_feed.json")
         return 0
-    client_id, secret, key = os.environ.get("TWITCH_CLIENT_ID"), os.environ.get("TWITCH_CLIENT_SECRET"), os.environ.get("ANTHROPIC_API_KEY")
-    if not (client_id and secret):
-        print("[twitch] TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET are not set - nothing to do")
-        return 0
+    key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         print("[twitch] ANTHROPIC_API_KEY is not set - captions cannot be written")
         return 1
@@ -157,8 +136,7 @@ def main():
         print("[twitch] already posted today")
         return 0
     seen = set(store.get_json("twitch/seen.json", []) or [])
-    token = app_token(client_id, secret)
-    cands = candidates(cfg, seen, client_id, token)
+    cands = candidates(cfg, seen)
     print(f"[twitch] {len(cands)} usable clip(s) across the channels", flush=True)
     pages = list(cfg["page_ids"])
     cfg_pb = json.load(open(rw.CONFIG_FILE, encoding="utf-8"))
@@ -192,6 +170,10 @@ def main():
                 continue
             streamer = (cfg.get("display_names") or {}).get(clip["channel"], clip["channel"])
             safe, reason, overlay, caption = judge_and_write(clip, tr["text"], frames, streamer, key)
+            if safe is None:
+                report.append({"clip": clip["id"], "title": clip["title"], "result": "not GTA 6"})
+                seen.add(clip["id"])
+                continue
             if not safe or not caption or not overlay:
                 report.append({"clip": clip["id"], "title": clip["title"], "result": f"rejected: {reason or 'no copy'}"})
                 seen.add(clip["id"])

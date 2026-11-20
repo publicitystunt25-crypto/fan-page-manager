@@ -2,7 +2,7 @@ name: Twitch feed
 
 # Once a day: take the last 24 hours of clips from the Twitch channels in twitch_feed.json that are tagged GTA 6, give each
 # page its own clip with a caption written from what is said and shown, render them and hand them to the bot through
-# auto/queue.json. Needs TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET in the repo's secrets (without them it does nothing).
+# auto/queue.json.  No Twitch keys needed.
 # Turn it off with "enabled": false in twitch_feed.json.
 on:
   schedule:
@@ -52,6 +52,4 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
-          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
           RENDER_WORKERS: "1"
