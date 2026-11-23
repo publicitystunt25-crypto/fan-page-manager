@@ -1,5 +1,47 @@
 [
   {
+    "id": "gta6_post_wildnout_20261122",
+    "url": "https://www.twitch.tv/zackrawrr/clip/DifferentCalmCheeseDeIlluminati-z0HoQ2l_WjmmmjBM",
+    "render": "remote",
+    "channel": "zackrawrr",
+    "footer": "",
+    "from_manifest": "tw_DifferentCalmCheeseDeIlluminati-z0HoQ2l_WjmmmjBM",
+    "stagger_minutes": [
+      1,
+      3
+    ],
+    "variants": [
+      {
+        "page_ids": [
+          27
+        ],
+        "text": "",
+        "caption": "(unused: posts the already-rendered video and caption)"
+      }
+    ]
+  },
+  {
+    "id": "gta6_post_crashout_20261122",
+    "url": "https://www.twitch.tv/zackrawrr/clip/HonorableAstuteOrangeWoofer-5470ddeUTZ1nULaQ",
+    "render": "remote",
+    "channel": "zackrawrr",
+    "footer": "",
+    "from_manifest": "tw_HonorableAstuteOrangeWoofer-5470ddeUTZ1nULaQ",
+    "stagger_minutes": [
+      1,
+      3
+    ],
+    "variants": [
+      {
+        "page_ids": [
+          10
+        ],
+        "text": "",
+        "caption": "(unused: posts the already-rendered video and caption)"
+      }
+    ]
+  },
+  {
     "id": "poststats_nov21_20261121",
     "health": {
       "since": "2026-11-19T00:00:00Z"

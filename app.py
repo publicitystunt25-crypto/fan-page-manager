@@ -2632,7 +2632,7 @@ def _auto_feed_loop():
                 queue = r.json() if r.status_code == 200 else []
                 for entry in sorted(queue, key=lambda e: e.get("created", 0)):
                     jid = entry.get("id")
-                    if not isinstance(jid, str) or not jid.startswith("auto_"):
+                    if not isinstance(jid, str) or not jid.startswith(("auto_", "tw_")):
                         continue
                     stale = time.time() - entry.get("created", 0) > AUTO_FEED_STALE_HOURS * 3600
                     if not _claim_setting(f"job_{jid}", "skipped: too old" if stale else "started"):
