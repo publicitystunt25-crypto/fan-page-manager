@@ -1,5 +1,11 @@
 [
   {
+    "id": "poststats_nov26_20261126",
+    "health": {
+      "since": "2026-11-19T00:00:00Z"
+    }
+  },
+  {
     "id": "poststats_nov25_20261125",
     "health": {
       "since": "2026-11-19T00:00:00Z"
